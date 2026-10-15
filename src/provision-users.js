@@ -12,11 +12,11 @@ const additions = [];
 if (!environment.JWT_SECRET) {
   additions.push(`JWT_SECRET=${randomBytes(48).toString("base64url")}`);
 }
-if (!environment.CORS_ORIGIN) additions.push("CORS_ORIGIN=http://localhost:5173,http://127.0.0.1:5173");
+if (!environment.CORS_ORIGIN) additions.push("CORS_ORIGIN=https://prueba-d-lechonaxdxd.vercel.app,http://localhost:5173,http://127.0.0.1:5173");
 if (additions.length) await appendFile(envPath, `\n${additions.join("\n")}\n`, { encoding: "utf8", mode: 0o600 });
 
 process.env.JWT_SECRET = environment.JWT_SECRET || additions.find((line) => line.startsWith("JWT_SECRET=")).slice("JWT_SECRET=".length);
-process.env.CORS_ORIGIN = environment.CORS_ORIGIN || "http://localhost:5173,http://127.0.0.1:5173";
+process.env.CORS_ORIGIN = environment.CORS_ORIGIN || "https://prueba-d-lechonaxdxd.vercel.app,http://localhost:5173,http://127.0.0.1:5173";
 
 const { sequelize, User } = await import("./database.js");
 const initialAccounts = [
