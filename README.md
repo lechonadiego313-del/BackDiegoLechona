@@ -29,7 +29,21 @@ API REST para la aplicación de gestión de calidad e inocuidad. Usa Node.js, Ex
    npm run dev
    ```
 
-La API escucha en `http://localhost:3000` por defecto. Para producción usa `npm start`; la plataforma debe proporcionar `DATABASE_URL`, `JWT_SECRET` y `CORS_ORIGIN`. No publiques el archivo `.env`.
+La API escucha en `http://localhost:3000` por defecto. Para producción usa `npm start`; la plataforma debe proporcionar `DATABASE_URL`, `JWT_SECRET` y `CORS_ORIGIN`. El pool PostgreSQL usa por defecto un máximo de cinco conexiones por instancia; `DB_POOL_MAX`, `DB_POOL_MIN`, `DB_POOL_ACQUIRE_MS` y `DB_POOL_IDLE_MS` permiten ajustarlo dentro de límites validados. Considera todas las instancias del backend al fijar el total de conexiones permitido por el proveedor. No publiques el archivo `.env`.
+
+Para medir una publicación sin exponer sentencias SQL ni parámetros, activa opcionalmente `LOG_HTTP_TIMING=true` y/o `LOG_DB_TIMING=true` en la plataforma. Los logs HTTP omiten la query string; las respuestas incluyen `Server-Timing` para solicitudes normales. Estas métricas describen solo el tiempo observado por la API/Sequelize, no el tiempo total percibido por el navegador.
+
+Ejecuta las pruebas unitarias de reglas/validadores con `npm test` desde `server/`; no requieren conexión a la base de datos.
+
+## Consultas paginadas
+
+Los listados de recursos siguen siendo compatibles con clientes antiguos. Para paginar un recurso, envía `page` y `limit`; el límite máximo por respuesta es 100. Por ejemplo:
+
+```text
+GET /api/modules/agua/records?month=2026-10&format=ID_FORMATO&page=1&limit=10
+```
+
+La respuesta paginada contiene `items`, `total`, `page`, `pageSize` y `pages`. La interfaz usa esta ruta para consultar solo la página visible de registros. Los registros nuevos deben pertenecer al mes de trabajo seleccionado.
 
 ## Autenticación
 
@@ -48,8 +62,9 @@ Todos usan el prefijo `/api`:
 - `GET /health`: verifica la conexión a PostgreSQL.
 - `POST /auth/login`, `GET /auth/me`: autenticación y cuenta actual.
 - `GET`, `POST /auth/users`; `PATCH /auth/users/:id/status`: gestión de cuentas según el rol.
-- `GET /bootstrap`, `/modules`, `/modules/:moduleId`: datos iniciales y programas.
-- `/modules/:moduleId/{documents,formats,records,schedules,actions}`: operaciones de recursos de cada programa.
+- `GET /bootstrap`: metadatos, maestros y formatos para iniciar la interfaz.
+- `GET /modules`, `/modules/:moduleId?month=AAAA-MM`: programas y sus recursos; al abrir un programa, la interfaz solicita solo los registros del mes seleccionado.
+- `/modules/:moduleId/{documents,formats,records,schedules,actions}`: operaciones de recursos de cada programa. Los listados de documentos no incluyen los adjuntos; `GET /modules/:moduleId/documents/:id` obtiene un archivo individual.
 - `GET`, `POST`, `DELETE /masters/:category`: datos maestros.
 - `GET /reports`, `/trace`, `/backup`: informes, trazabilidad y descarga opcional de copia JSON. No hay endpoints para subir o restaurar backups.
 

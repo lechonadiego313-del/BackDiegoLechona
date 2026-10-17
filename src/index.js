@@ -6,13 +6,12 @@ import { Op } from "sequelize";
 import { sequelize, Document, Format, Record, Schedule, CorrectiveAction, MasterItem, AppSetting, User } from "./database.js";
 import { authenticate, publicUser, requireRoles, signAccessToken } from "./auth.js";
 import { DEFAULT_FORMATS, MASTER_CATEGORIES, MODULES } from "./modules.js";
+import { evaluateRecord, parsePagination, recordDateMatchesMonth, traceRecordsSql, validMonth, validateFormat } from "./domain.js";
 
 const app = express();
 const port = Number(process.env.PORT || 3000);
 const moduleIds = new Set(MODULES.map(([id]) => id));
-const frequencies = new Set(["Diario", "Semanal", "Quincenal", "Mensual", "Por evento"]);
 const scheduleIntervals = new Set(["Única", "1", "7", "15", "30", "90", "180", "365"]);
-const fieldTypes = new Set(["num", "txt", "date", "sel", "chk", "producto", "area", "punto", "proveedor", "cliente", "equipo", "lote"]);
 const userRoles = new Set(["super", "user_admin", "user"]);
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -33,6 +32,19 @@ app.use(cors({
     return callback(new Error("El origen no está autorizado para acceder a esta API."));
   },
 }));
+app.use((req, res, next) => {
+  const startedAt = process.hrtime.bigint();
+  const originalEnd = res.end;
+  res.end = function (...args) {
+    const elapsedMs = Number(process.hrtime.bigint() - startedAt) / 1e6;
+    if (!this.headersSent) this.setHeader("Server-Timing", `app;dur=${elapsedMs.toFixed(1)}`);
+    if (process.env.LOG_HTTP_TIMING === "true") {
+      console.info(`[http] ${req.method} ${req.path} ${this.statusCode} ${elapsedMs.toFixed(1)}ms`);
+    }
+    return originalEnd.apply(this, args);
+  };
+  next();
+});
 app.use(express.json({ limit: "20mb" }));
 
 function requireModule(req, res, next) {
@@ -47,33 +59,32 @@ function requireBodyObject(req, res, next) {
   next();
 }
 
-function evaluateRecord(format, values) {
-  const deviations = [];
-  for (const field of format.fields) {
-    const value = values[field.n];
-    if (field.t === "num" && value !== "" && value != null && Number.isFinite(Number(value))) {
-      const number = Number(value);
-      if ((field.min !== "" && field.min != null && number < Number(field.min)) ||
-          (field.max !== "" && field.max != null && number > Number(field.max))) {
-        deviations.push(`${field.n}: ${value}${field.u ? ` ${field.u}` : ""} fuera de rango [${field.min ?? "–"} a ${field.max ?? "–"}]`);
-      }
-    }
-    if (field.t === "chk" && value === "No") deviations.push(`${field.n}: No conforme`);
-  }
-  return deviations;
-}
-
 function addDays(date, days) {
   const value = new Date(`${date}T12:00:00Z`);
   value.setUTCDate(value.getUTCDate() + days);
   return value.toISOString().slice(0, 10);
 }
 
-async function getProgram(moduleId) {
+async function getProgram(moduleId, includeDocumentData = false, recordMonth = "", includeRecords = true) {
+  const documentQuery = {
+    where: { moduleId },
+    order: [["createdAt", "DESC"]],
+  };
+  if (!includeDocumentData) documentQuery.attributes = { exclude: ["data"] };
+  const recordWhere = { moduleId };
+  if (recordMonth) {
+    const [year, monthNumber] = recordMonth.split("-").map(Number);
+    recordWhere.date = {
+      [Op.gte]: `${recordMonth}-01`,
+      [Op.lt]: new Date(Date.UTC(year, monthNumber, 1)).toISOString().slice(0, 10),
+    };
+  }
   const [documents, formats, records, schedules, actions] = await Promise.all([
-    Document.findAll({ where: { moduleId }, order: [["createdAt", "DESC"]] }),
+    Document.findAll(documentQuery),
     Format.findAll({ where: { moduleId }, order: [["createdAt", "ASC"]] }),
-    Record.findAll({ where: { moduleId }, order: [["date", "DESC"], ["createdAt", "DESC"]] }),
+    includeRecords
+      ? Record.findAll({ where: recordWhere, order: [["date", "DESC"], ["createdAt", "DESC"]] })
+      : Promise.resolve([]),
     Schedule.findAll({ where: { moduleId }, order: [["date", "ASC"]] }),
     CorrectiveAction.findAll({ where: { moduleId }, order: [["createdAt", "DESC"]] }),
   ]);
@@ -88,84 +99,65 @@ function monthOf(date) {
   return String(date || "").slice(0, 7);
 }
 
-function validMonth(month) {
-  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return false;
-  return true;
-}
-
-function validateFormat({ name, freq, fields }) {
-  if (!String(name || "").trim() || !Array.isArray(fields) || fields.length === 0) {
-    return "El formato requiere nombre y al menos un campo.";
-  }
-  if (!frequencies.has(freq)) return "La frecuencia indicada no es válida.";
-  for (const field of fields) {
-    if (!field || !String(field.n || "").trim() || !fieldTypes.has(field.t)) {
-      return "Todos los campos deben tener un nombre y un tipo válido.";
-    }
-    if (field.t === "num") {
-      const min = field.min === "" || field.min == null ? null : Number(field.min);
-      const max = field.max === "" || field.max == null ? null : Number(field.max);
-      if ((min !== null && !Number.isFinite(min)) ||
-          (max !== null && !Number.isFinite(max)) ||
-          (min !== null && max !== null && min > max)) {
-        return `Los límites numéricos de "${field.n}" no son válidos.`;
-      }
-    }
-  }
-  return "";
-}
-
-async function collectAlerts(ids, month) {
+async function makeReport(ids, month) {
   const now = today();
   const alerts = [];
-  for (const moduleId of ids) {
-    const [records, formats, actions, schedules, documents] = await Promise.all([
-      Record.findAll({ where: { moduleId } }),
-      Format.findAll({ where: { moduleId }, attributes: ["id", "name"] }),
-      CorrectiveAction.findAll({ where: { moduleId, e: "Abierta", due: { [Op.lt]: now } } }),
-      Schedule.findAll({ where: { moduleId, ok: false, date: { [Op.lt]: now } } }),
-      Document.findAll({ where: { moduleId, rev: { [Op.not]: null, [Op.lt]: now } } }),
-    ]);
-    const formatNames = new Map(formats.map((format) => [format.id, format.name]));
-    records.filter((record) => record.devs.length && monthOf(record.date) === month).forEach((record) => {
-      alerts.push({ moduleId, moduleName: MODULES.find(([id]) => id === moduleId)?.[1], kind: "Desviación", description: `${formatNames.get(record.fmt) || "(formato eliminado)"} · ${record.date} · ${record.devs.join("; ")}` });
-    });
-    const moduleName = MODULES.find(([id]) => id === moduleId)?.[1];
-    actions.forEach((action) => alerts.push({ moduleId, moduleName, kind: "Acción vencida", description: `${action.desc} (límite ${action.due})` }));
-    schedules.forEach((schedule) => alerts.push({ moduleId, moduleName, kind: "Actividad vencida", description: `${schedule.name} (${schedule.date})` }));
-    documents.forEach((document) => alerts.push({ moduleId, moduleName, kind: "Documento por revisar", description: `${document.name} v${document.ver} (${document.rev})` }));
-  }
-  return alerts;
-}
-
-async function makeReport(ids, month) {
   const rows = [];
   const [year, monthNumber] = month.split("-").map(Number);
   const nextMonth = new Date(Date.UTC(year, monthNumber, 1)).toISOString().slice(0, 10);
-  let totals = { records: 0, deviations: 0, openActions: 0, overdueSchedules: 0 };
-  for (const moduleId of ids) {
-    const [records, formats, actions, schedules] = await Promise.all([
-      Record.findAll({ where: { moduleId, date: { [Op.gte]: `${month}-01`, [Op.lt]: nextMonth } } }),
-      Format.findAll({ where: { moduleId }, attributes: ["id", "name"] }),
-      CorrectiveAction.findAll({ where: { moduleId, e: "Abierta" } }),
-      Schedule.findAll({ where: { moduleId, ok: false, date: { [Op.lt]: today() } } }),
-    ]);
-    const names = new Map(formats.map((format) => [format.id, format.name]));
-    totals.records += records.length;
-    totals.deviations += records.filter((record) => record.devs.length).length;
-    totals.openActions += actions.length;
-    totals.overdueSchedules += schedules.length;
-    records.forEach((record) => rows.push({
-      moduleId,
-      moduleName: MODULES.find(([id]) => id === moduleId)?.[1],
-      format: names.get(record.fmt) || "(formato eliminado)",
+  const moduleNames = new Map(MODULES.map(([id, name]) => [id, name]));
+  const [records, formats, actions, schedules, documents] = await Promise.all([
+    Record.findAll({
+      where: { moduleId: { [Op.in]: ids }, date: { [Op.gte]: `${month}-01`, [Op.lt]: nextMonth } },
+      attributes: ["id", "moduleId", "fmt", "date", "resp", "vals", "devs", "obs"],
+    }),
+    Format.findAll({ where: { moduleId: { [Op.in]: ids } }, attributes: ["id", "moduleId", "name"] }),
+    CorrectiveAction.findAll({
+      where: { moduleId: { [Op.in]: ids }, e: "Abierta" },
+      attributes: ["moduleId", "desc", "due"],
+    }),
+    Schedule.findAll({
+      where: { moduleId: { [Op.in]: ids }, ok: false, date: { [Op.lt]: now } },
+      attributes: ["moduleId", "name", "date"],
+    }),
+    Document.findAll({
+      where: { moduleId: { [Op.in]: ids }, rev: { [Op.not]: null, [Op.lt]: now } },
+      attributes: ["moduleId", "name", "ver", "rev"],
+    }),
+  ]);
+  const formatNames = new Map(formats.map((format) => [format.id, format.name]));
+  const totals = {
+    records: records.length,
+    deviations: records.filter((record) => record.devs.length).length,
+    openActions: actions.length,
+    overdueSchedules: schedules.length,
+  };
+  records.forEach((record) => {
+    const moduleName = moduleNames.get(record.moduleId);
+    rows.push({
+      moduleId: record.moduleId,
+      moduleName,
+      formatId: record.fmt,
+      format: formatNames.get(record.fmt) || "(formato eliminado)",
       date: record.date,
       responsible: record.resp,
       values: record.vals,
       deviations: record.devs,
       observations: record.obs,
-    }));
-  }
+    });
+    if (record.devs.length) {
+      alerts.push({ moduleId: record.moduleId, moduleName, kind: "Desviación", description: `${formatNames.get(record.fmt) || "(formato eliminado)"} · ${record.date} · ${record.devs.join("; ")}` });
+    }
+  });
+  actions.filter((action) => action.due < now).forEach((action) => {
+    alerts.push({ moduleId: action.moduleId, moduleName: moduleNames.get(action.moduleId), kind: "Acción vencida", description: `${action.desc} (límite ${action.due})` });
+  });
+  schedules.forEach((schedule) => {
+    alerts.push({ moduleId: schedule.moduleId, moduleName: moduleNames.get(schedule.moduleId), kind: "Actividad vencida", description: `${schedule.name} (${schedule.date})` });
+  });
+  documents.forEach((document) => {
+    alerts.push({ moduleId: document.moduleId, moduleName: moduleNames.get(document.moduleId), kind: "Documento por revisar", description: `${document.name} v${document.ver} (${document.rev})` });
+  });
   rows.sort((a, b) => a.date.localeCompare(b.date));
   return {
     month,
@@ -174,7 +166,7 @@ async function makeReport(ids, month) {
       conformity: totals.records ? Math.round((100 * (totals.records - totals.deviations)) / totals.records) : 100,
     },
     records: rows,
-    alerts: await collectAlerts(ids, month),
+    alerts,
   };
 }
 
@@ -259,23 +251,29 @@ app.patch("/api/auth/users/:id/status", requireRoles("super", "user_admin"), req
 }));
 
 app.get("/api/bootstrap", asyncRoute(async (_req, res) => {
-  const programEntries = await Promise.all(MODULES.map(async ([id]) => [id, await getProgram(id)]));
-  const masterEntries = await Promise.all(Object.keys(MASTER_CATEGORIES).map(async (category) => {
-    const items = await MasterItem.findAll({ where: { category }, order: [["value", "ASC"]] });
-    return [category, items];
-  }));
+  const [masterRows, formats, lastBackup] = await Promise.all([
+    MasterItem.findAll({ order: [["category", "ASC"], ["value", "ASC"]] }),
+    Format.findAll({ attributes: ["id", "moduleId", "name", "fields"], order: [["createdAt", "ASC"]] }),
+    getLastBackup(),
+  ]);
+  const masters = Object.fromEntries(Object.keys(MASTER_CATEGORIES).map((category) => [category, []]));
+  masterRows.forEach((item) => {
+    if (Object.hasOwn(masters, item.category)) masters[item.category].push(item);
+  });
   res.json({
     modules: MODULES.map(([id, name]) => ({ id, name })),
-    masters: Object.fromEntries(masterEntries),
-    programs: Object.fromEntries(programEntries),
-    lastBackup: await getLastBackup(),
+    masters,
+    formats,
+    lastBackup,
   });
 }));
 
 app.get("/api/modules", (_req, res) => res.json(MODULES.map(([id, name]) => ({ id, name }))));
 
 app.get("/api/modules/:moduleId", requireModule, asyncRoute(async (req, res) => {
-  res.json(await getProgram(req.params.moduleId));
+  const month = String(req.query.month || "");
+  if (month && !validMonth(month)) return res.status(400).json({ error: "El mes debe tener el formato AAAA-MM." });
+  res.json(await getProgram(req.params.moduleId, false, month, req.query.records !== "0"));
 }));
 
 app.get("/api/modules/:moduleId/:resource", requireModule, asyncRoute(async (req, res) => {
@@ -288,10 +286,52 @@ app.get("/api/modules/:moduleId/:resource", requireModule, asyncRoute(async (req
   };
   const resource = resources[req.params.resource];
   if (!resource) return res.status(404).json({ error: "Recurso no encontrado." });
-  res.json(await resource[0].findAll({
+  const { error, pagination } = parsePagination(req.query);
+  if (error) return res.status(400).json({ error });
+  const query = {
     where: { moduleId: req.params.moduleId },
-    order: [[resource[1], req.params.resource === "records" ? "DESC" : "ASC"]],
-  }));
+    order: req.params.resource === "records"
+      ? [["date", "DESC"], ["createdAt", "DESC"], ["id", "DESC"]]
+      : [[resource[1], "ASC"], ["id", "ASC"]],
+  };
+  if (req.params.resource === "documents") query.attributes = { exclude: ["data"] };
+  if (req.params.resource === "records") {
+    const month = String(req.query.month || "");
+    if (month && !validMonth(month)) return res.status(400).json({ error: "El mes debe tener el formato AAAA-MM." });
+    if (month) {
+      const [year, monthNumber] = month.split("-").map(Number);
+      query.where.date = {
+        [Op.gte]: `${month}-01`,
+        [Op.lt]: new Date(Date.UTC(year, monthNumber, 1)).toISOString().slice(0, 10),
+      };
+    }
+    const formatId = String(req.query.format || "");
+    if (formatId) query.where.fmt = formatId;
+  }
+  if (pagination) {
+    const result = await resource[0].findAndCountAll({
+      ...query,
+      limit: pagination.pageSize,
+      offset: pagination.offset,
+    });
+    return res.json({
+      items: result.rows,
+      total: result.count,
+      page: pagination.page,
+      pageSize: pagination.pageSize,
+      pages: Math.ceil(result.count / pagination.pageSize),
+    });
+  }
+  res.json(await resource[0].findAll(query));
+}));
+
+app.get("/api/modules/:moduleId/documents/:id", requireModule, asyncRoute(async (req, res) => {
+  const document = await Document.findOne({
+    where: { id: req.params.id, moduleId: req.params.moduleId },
+    attributes: ["id", "file", "data"],
+  });
+  if (!document) return res.status(404).json({ error: "Documento no encontrado." });
+  res.json(document);
 }));
 
 app.post("/api/modules/:moduleId/documents", requireModule, requireBodyObject, asyncRoute(async (req, res) => {
@@ -301,7 +341,9 @@ app.post("/api/modules/:moduleId/documents", requireModule, requireBodyObject, a
     return res.status(413).json({ error: "El archivo debe ser válido y pesar máximo 1,5 MB." });
   }
   const document = await Document.create({ moduleId: req.params.moduleId, name: String(name).trim(), tipo, ver, rev: rev || null, file, data });
-  res.status(201).json(document);
+  const savedDocument = document.toJSON();
+  delete savedDocument.data;
+  res.status(201).json(savedDocument);
 }));
 
 app.delete("/api/modules/:moduleId/documents/:id", requireModule, asyncRoute(async (req, res) => {
@@ -338,6 +380,11 @@ app.post("/api/modules/:moduleId/records", requireModule, requireBodyObject, asy
   const { fmt, date, resp = "", obs = "", vals = {} } = req.body;
   if (!fmt || !date || !vals || typeof vals !== "object" || Array.isArray(vals)) {
     return res.status(400).json({ error: "Formato, fecha y valores del registro son obligatorios." });
+  }
+  const recordDate = String(date);
+  const month = String(req.body.month || recordDate.slice(0, 7));
+  if (!recordDateMatchesMonth(recordDate, month)) {
+    return res.status(400).json({ error: "La fecha del registro debe pertenecer al mes seleccionado." });
   }
   const format = await Format.findOne({ where: { id: fmt, moduleId: req.params.moduleId } });
   if (!format) return res.status(400).json({ error: "El formato indicado no existe en este programa." });
@@ -465,9 +512,10 @@ app.get("/api/reports", asyncRoute(async (req, res) => {
 app.get("/api/trace", asyncRoute(async (req, res) => {
   const lot = String(req.query.lot || "").trim().toLocaleLowerCase();
   if (!lot) return res.json({ lot: "", results: [] });
-  const records = await Record.findAll({ order: [["date", "ASC"]] });
-  const results = records.filter((record) => Object.values(record.vals).some((value) => String(value).toLocaleLowerCase() === lot));
-  const formats = await Format.findAll({ attributes: ["id", "moduleId", "name"] });
+  const [records, formats] = await Promise.all([
+    sequelize.query(traceRecordsSql(), { bind: { lot }, model: Record, mapToModel: true }),
+    Format.findAll({ attributes: ["id", "moduleId", "name"] }),
+  ]);
   const formatNames = new Map(formats.map((format) => [`${format.moduleId}:${format.id}`, format.name]));
   res.json({
     lot,
@@ -482,7 +530,7 @@ app.get("/api/trace", asyncRoute(async (req, res) => {
 async function exportBackup(month) {
   const programs = {};
   for (const [moduleId] of MODULES) {
-    const data = await getProgram(moduleId);
+    const data = await getProgram(moduleId, true);
     programs[moduleId] = {
       docs: data.documents.map((item) => item.toJSON()),
       formats: data.formats.map((item) => item.toJSON()),
@@ -512,10 +560,10 @@ app.get("/api/backup", asyncRoute(async (req, res) => {
 app.use((error, _req, res, _next) => {
   console.error(error);
   if (error.name === "SequelizeUniqueConstraintError") {
-    return res.status(409).json({ error: "Ya existe un usuario con ese nombre de usuario." });
+    return res.status(409).json({ error: "Ya existe un elemento con esos datos." });
   }
-  if (error.name === "SequelizeValidationError" || error.name === "SequelizeDatabaseError") {
-    return res.status(400).json({ error: error.message });
+  if (error.name === "SequelizeValidationError") {
+    return res.status(400).json({ error: "Los datos enviados no son válidos." });
   }
   res.status(500).json({ error: "Error interno del servidor." });
 });

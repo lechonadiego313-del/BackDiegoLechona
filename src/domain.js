@@ -1,0 +1,75 @@
+const frequencies = new Set(["Diario", "Semanal", "Quincenal", "Mensual", "Por evento"]);
+const fieldTypes = new Set(["num", "txt", "date", "sel", "chk", "producto", "area", "punto", "proveedor", "cliente", "equipo", "lote"]);
+
+export function evaluateRecord(format, values) {
+  const deviations = [];
+  for (const field of format.fields) {
+    const value = values[field.n];
+    if (field.t === "num" && value !== "" && value != null && Number.isFinite(Number(value))) {
+      const number = Number(value);
+      if ((field.min !== "" && field.min != null && number < Number(field.min)) ||
+          (field.max !== "" && field.max != null && number > Number(field.max))) {
+        deviations.push(`${field.n}: ${value}${field.u ? ` ${field.u}` : ""} fuera de rango [${field.min ?? "–"} a ${field.max ?? "–"}]`);
+      }
+    }
+    if (field.t === "chk" && value === "No") deviations.push(`${field.n}: No conforme`);
+  }
+  return deviations;
+}
+
+export function validMonth(month) {
+  return /^\d{4}-(0[1-9]|1[0-2])$/.test(month);
+}
+
+export function recordDateMatchesMonth(date, month) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !validMonth(month) || date.slice(0, 7) !== month) return false;
+  const value = new Date(`${date}T00:00:00.000Z`);
+  return !Number.isNaN(value.getTime()) && value.toISOString().slice(0, 10) === date;
+}
+
+export function validateFormat({ name, freq, fields }) {
+  if (!String(name || "").trim() || !Array.isArray(fields) || fields.length === 0) {
+    return "El formato requiere nombre y al menos un campo.";
+  }
+  if (!frequencies.has(freq)) return "La frecuencia indicada no es válida.";
+  for (const field of fields) {
+    if (!field || !String(field.n || "").trim() || !fieldTypes.has(field.t)) {
+      return "Todos los campos deben tener un nombre y un tipo válido.";
+    }
+    if (field.t === "num") {
+      const min = field.min === "" || field.min == null ? null : Number(field.min);
+      const max = field.max === "" || field.max == null ? null : Number(field.max);
+      if ((min !== null && !Number.isFinite(min)) ||
+          (max !== null && !Number.isFinite(max)) ||
+          (min !== null && max !== null && min > max)) {
+        return `Los límites numéricos de "${field.n}" no son válidos.`;
+      }
+    }
+  }
+  return "";
+}
+
+export function parsePagination(query) {
+  const hasPagination = query.page != null || query.limit != null;
+  if (!hasPagination) return { error: "", pagination: null };
+  const page = query.page == null ? 1 : Number(query.page);
+  const pageSize = query.limit == null ? 25 : Number(query.limit);
+  if (!Number.isSafeInteger(page) || page < 1) {
+    return { error: "La página debe ser un entero mayor que cero.", pagination: null };
+  }
+  if (!Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > 100) {
+    return { error: "El límite por página debe estar entre 1 y 100.", pagination: null };
+  }
+  return { error: "", pagination: { page, pageSize, offset: (page - 1) * pageSize } };
+}
+
+export function traceRecordsSql() {
+  return `SELECT r.*
+    FROM "records" AS r
+    WHERE EXISTS (
+      SELECT 1
+      FROM jsonb_each_text(r."vals") AS field(key, value)
+      WHERE lower(field.value) = lower($lot)
+    )
+    ORDER BY r."date" ASC, r."createdAt" ASC`;
+}

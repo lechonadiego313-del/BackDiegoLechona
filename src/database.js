@@ -5,9 +5,28 @@ if (!process.env.DATABASE_URL) {
   throw new Error("Falta DATABASE_URL. Configúrala con la cadena de conexión de Neon.");
 }
 
+function poolSetting(name, fallback, minimum, maximum) {
+  const raw = process.env[name];
+  if (raw == null || raw === "") return fallback;
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
+    throw new Error(`${name} debe ser un entero entre ${minimum} y ${maximum}.`);
+  }
+  return value;
+}
+
+const poolMax = poolSetting("DB_POOL_MAX", 5, 1, 20);
+const poolMin = poolSetting("DB_POOL_MIN", 0, 0, poolMax);
+const poolAcquire = poolSetting("DB_POOL_ACQUIRE_MS", 30000, 1000, 120000);
+const poolIdle = poolSetting("DB_POOL_IDLE_MS", 10000, 1000, 120000);
+
 export const sequelize = new Sequelize(process.env.DATABASE_URL, {
   dialect: "postgres",
-  logging: false,
+  benchmark: true,
+  logging: process.env.LOG_DB_TIMING === "true"
+    ? (_sql, elapsedMs) => console.info(`[db] ${Number(elapsedMs).toFixed(1)}ms`)
+    : false,
+  pool: { max: poolMax, min: poolMin, acquire: poolAcquire, idle: poolIdle },
   dialectOptions: {
     ssl: { require: true, rejectUnauthorized: false },
   },

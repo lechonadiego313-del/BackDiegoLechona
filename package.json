@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "nodemon --watch src --ext js,json src/index.js",
     "start": "node src/index.js",
-    "create-users": "node src/provision-users.js"
+    "create-users": "node src/provision-users.js",
+    "test": "node --test"
   },
   "dependencies": {
     "cors": "^2.8.5",
