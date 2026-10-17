@@ -45,6 +45,8 @@ GET /api/modules/agua/records?month=2026-10&format=ID_FORMATO&page=1&limit=10
 
 La respuesta paginada contiene `items`, `total`, `page`, `pageSize` y `pages`. La interfaz usa esta ruta para consultar solo la página visible de registros. Los registros nuevos deben pertenecer al mes de trabajo seleccionado.
 
+Para los programas `agua` y `temp`, `GET /api/modules/:moduleId/records/chart?month=AAAA-MM&format=ID` devuelve las mediciones ordenadas del formato y mes indicados, junto con la fecha y marca de creación. Se usa en la gráfica de tendencias; no altera el histórico paginado ni almacena datos derivados.
+
 ## Autenticación
 
 `GET /api/health` y `POST /api/auth/login` son públicos. Los demás endpoints requieren un JWT en el encabezado `Authorization: Bearer <token>`. Los tokens vencen en 8 horas.

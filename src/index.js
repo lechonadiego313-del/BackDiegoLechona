@@ -276,6 +276,37 @@ app.get("/api/modules/:moduleId", requireModule, asyncRoute(async (req, res) => 
   res.json(await getProgram(req.params.moduleId, false, month, req.query.records !== "0"));
 }));
 
+app.get("/api/modules/:moduleId/records/chart", requireModule, asyncRoute(async (req, res) => {
+  if (!["agua", "temp"].includes(req.params.moduleId)) {
+    return res.status(404).json({ error: "No hay gráficas configuradas para este programa." });
+  }
+  const month = String(req.query.month || "");
+  const formatId = String(req.query.format || "");
+  if (!validMonth(month)) return res.status(400).json({ error: "El mes debe tener el formato AAAA-MM." });
+  if (!formatId) return res.status(400).json({ error: "El formato del registro es obligatorio." });
+
+  const format = await Format.findOne({
+    where: { id: formatId, moduleId: req.params.moduleId },
+    attributes: ["id", "fields"],
+  });
+  if (!format) return res.status(404).json({ error: "Formato no encontrado." });
+
+  const [year, monthNumber] = month.split("-").map(Number);
+  const records = await Record.findAll({
+    where: {
+      moduleId: req.params.moduleId,
+      fmt: formatId,
+      date: {
+        [Op.gte]: `${month}-01`,
+        [Op.lt]: new Date(Date.UTC(year, monthNumber, 1)).toISOString().slice(0, 10),
+      },
+    },
+    attributes: ["id", "date", "createdAt", "vals"],
+    order: [["date", "ASC"], ["createdAt", "ASC"], ["id", "ASC"]],
+  });
+  res.json({ fields: format.fields, records });
+}));
+
 app.get("/api/modules/:moduleId/:resource", requireModule, asyncRoute(async (req, res) => {
   const resources = {
     documents: [Document, "createdAt"],
