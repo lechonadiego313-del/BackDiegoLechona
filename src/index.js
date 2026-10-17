@@ -441,14 +441,14 @@ app.get("/api/masters", asyncRoute(async (_req, res) => {
 app.post("/api/masters/:category", requireBodyObject, asyncRoute(async (req, res) => {
   const { category } = req.params;
   const value = String(req.body.value || "").trim();
-  if (!masterCategories.has(category)) return res.status(404).json({ error: "Tipo de maestro no encontrado." });
+  if (!Object.hasOwn(MASTER_CATEGORIES, category)) return res.status(404).json({ error: "Tipo de maestro no encontrado." });
   if (!value) return res.status(400).json({ error: "El valor es obligatorio." });
   const [item, created] = await MasterItem.findOrCreate({ where: { category, value }, defaults: { category, value } });
   res.status(created ? 201 : 200).json(item);
 }));
 
 app.delete("/api/masters/:category/:id", asyncRoute(async (req, res) => {
-  if (!masterCategories.has(req.params.category)) return res.status(404).json({ error: "Tipo de maestro no encontrado." });
+  if (!Object.hasOwn(MASTER_CATEGORIES, req.params.category)) return res.status(404).json({ error: "Tipo de maestro no encontrado." });
   const count = await MasterItem.destroy({ where: { id: req.params.id, category: req.params.category } });
   if (!count) return res.status(404).json({ error: "Elemento maestro no encontrado." });
   res.status(204).end();
