@@ -13,6 +13,7 @@ const port = Number(process.env.PORT || 3000);
 const moduleIds = new Set(MODULES.map(([id]) => id));
 const scheduleIntervals = new Set(["Única", "1", "7", "15", "30", "90", "180", "365"]);
 const userRoles = new Set(["super", "user_admin", "user"]);
+const actionStates = new Set(["Abierta", "En proceso", "Pendiente de verificación", "Cerrada"]);
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   limit: 10,
@@ -99,6 +100,20 @@ function monthOf(date) {
   return String(date || "").slice(0, 7);
 }
 
+function validateEquipmentConfig(rawConfig) {
+  const config = rawConfig && typeof rawConfig === "object" && !Array.isArray(rawConfig) ? rawConfig : {};
+  const type = String(config.type || "").trim();
+  const min = config.min === "" || config.min == null ? null : Number(config.min);
+  const max = config.max === "" || config.max == null ? null : Number(config.max);
+  if (!new Set(["Refrigeración", "Congelación"]).has(type)) {
+    return { error: "Selecciona si el equipo es de refrigeración o congelación." };
+  }
+  if (!Number.isFinite(min) || !Number.isFinite(max) || min > max) {
+    return { error: "El rango del equipo debe tener un mínimo y máximo válidos." };
+  }
+  return { error: "", value: { type, min, max } };
+}
+
 async function makeReport(ids, month) {
   const now = today();
   const alerts = [];
@@ -113,7 +128,7 @@ async function makeReport(ids, month) {
     }),
     Format.findAll({ where: { moduleId: { [Op.in]: ids } }, attributes: ["id", "moduleId", "name"] }),
     CorrectiveAction.findAll({
-      where: { moduleId: { [Op.in]: ids }, e: "Abierta" },
+      where: { moduleId: { [Op.in]: ids }, e: { [Op.ne]: "Cerrada" } },
       attributes: ["moduleId", "desc", "due"],
     }),
     Schedule.findAll({
@@ -145,12 +160,15 @@ async function makeReport(ids, month) {
       deviations: record.devs,
       observations: record.obs,
     });
-    if (record.devs.length) {
-      alerts.push({ moduleId: record.moduleId, moduleName, kind: "Desviación", description: `${formatNames.get(record.fmt) || "(formato eliminado)"} · ${record.date} · ${record.devs.join("; ")}` });
-    }
   });
-  actions.filter((action) => action.due < now).forEach((action) => {
-    alerts.push({ moduleId: action.moduleId, moduleName: moduleNames.get(action.moduleId), kind: "Acción vencida", description: `${action.desc} (límite ${action.due})` });
+  actions.forEach((action) => {
+    const overdue = action.due < now;
+    alerts.push({
+      moduleId: action.moduleId,
+      moduleName: moduleNames.get(action.moduleId),
+      kind: overdue ? "Acción vencida" : "Acción correctiva pendiente",
+      description: `${action.desc} (límite ${action.due})`,
+    });
   });
   schedules.forEach((schedule) => {
     alerts.push({ moduleId: schedule.moduleId, moduleName: moduleNames.get(schedule.moduleId), kind: "Actividad vencida", description: `${schedule.name} (${schedule.date})` });
@@ -393,7 +411,23 @@ app.post("/api/modules/:moduleId/records", requireModule, requireBodyObject, asy
     return field.t === "num" && value !== "" && value != null && !Number.isFinite(Number(value));
   });
   if (hasInvalidNumber) return res.status(400).json({ error: "Cada campo numérico debe contener un número válido." });
-  const devs = evaluateRecord(format, vals);
+  let dynamicRanges = {};
+  const equipmentField = format.fields.find((field) => field.t === "equipo");
+  const equipmentValue = equipmentField ? vals[equipmentField.n] : "";
+  if (req.params.moduleId === "temp" && equipmentValue) {
+    const equipment = await MasterItem.findOne({ where: { category: "equipos", value: String(equipmentValue) } });
+    const min = equipment?.config?.min;
+    const max = equipment?.config?.max;
+    if (min !== "" && min != null && max !== "" && max != null) {
+      const temperatureField = format.fields.find((field) => field.t === "num" && field.n.toLocaleLowerCase("es").includes("temperatura"));
+      if (temperatureField) dynamicRanges[temperatureField.n] = {
+        min,
+        max,
+        label: `${equipment.value} (${equipment.config.type || "equipo"})`,
+      };
+    }
+  }
+  const devs = evaluateRecord(format, vals, dynamicRanges);
   const result = await sequelize.transaction(async (transaction) => {
     const record = await Record.create({ moduleId: req.params.moduleId, fmt, date, resp, obs, vals, devs }, { transaction });
     let action = null;
@@ -467,7 +501,44 @@ app.post("/api/modules/:moduleId/actions/:id/close", requireModule, requireBodyO
   const action = await CorrectiveAction.findOne({ where: { id: req.params.id, moduleId: req.params.moduleId, e: "Abierta" } });
   if (!action) return res.status(404).json({ error: "Acción abierta no encontrada." });
   const detail = String(req.body.cierre || "").trim();
-  await action.update({ e: "Cerrada", cierre: `${detail} (${today()})` });
+  const closedBy = String(req.body.closedBy || "").trim();
+  if (![action.correction, action.cause, action.actionPlan, action.evidence, detail, closedBy].every(Boolean)) {
+    return res.status(400).json({ error: "Completa la gestión y la verificación antes de cerrar la acción." });
+  }
+  await action.update({ e: "Cerrada", verification: detail, closedBy, closedOn: today(), cierre: `${detail} (${today()})` });
+  res.json(action);
+}));
+
+app.put("/api/modules/:moduleId/actions/:id", requireModule, requireBodyObject, asyncRoute(async (req, res) => {
+  const action = await CorrectiveAction.findOne({ where: { id: req.params.id, moduleId: req.params.moduleId } });
+  if (!action) return res.status(404).json({ error: "Acción correctiva no encontrada." });
+  const next = {
+    correction: String(req.body.correction ?? action.correction ?? "").trim(),
+    cause: String(req.body.cause ?? action.cause ?? "").trim(),
+    actionPlan: String(req.body.actionPlan ?? action.actionPlan ?? "").trim(),
+    evidence: String(req.body.evidence ?? action.evidence ?? "").trim(),
+    verification: String(req.body.verification ?? action.verification ?? "").trim(),
+    closedBy: String(req.body.closedBy ?? action.closedBy ?? "").trim(),
+    resp: String(req.body.resp ?? action.resp ?? "").trim(),
+    due: String(req.body.due ?? action.due),
+    e: String(req.body.e ?? action.e),
+  };
+  if (!actionStates.has(next.e)) return res.status(400).json({ error: "El estado de la acción no es válido." });
+  if (!recordDateMatchesMonth(next.due, next.due.slice(0, 7))) {
+    return res.status(400).json({ error: "La fecha límite no es válida." });
+  }
+  if (next.e === "Cerrada") {
+    const required = [next.correction, next.cause, next.actionPlan, next.evidence, next.verification, next.closedBy];
+    if (required.some((value) => !value)) {
+      return res.status(400).json({ error: "Para cerrar debes completar corrección, causa, plan, evidencia, verificación y responsable del cierre." });
+    }
+    next.closedOn = today();
+    next.cierre = `${next.verification} (${next.closedOn})`;
+  } else {
+    next.closedOn = null;
+    next.cierre = "";
+  }
+  await action.update(next);
   res.json(action);
 }));
 
@@ -490,8 +561,20 @@ app.post("/api/masters/:category", requireBodyObject, asyncRoute(async (req, res
   const value = String(req.body.value || "").trim();
   if (!Object.hasOwn(MASTER_CATEGORIES, category)) return res.status(404).json({ error: "Tipo de maestro no encontrado." });
   if (!value) return res.status(400).json({ error: "El valor es obligatorio." });
-  const [item, created] = await MasterItem.findOrCreate({ where: { category, value }, defaults: { category, value } });
+  const config = category === "equipos" ? validateEquipmentConfig(req.body.config) : { error: "", value: {} };
+  if (config.error) return res.status(400).json({ error: config.error });
+  const [item, created] = await MasterItem.findOrCreate({ where: { category, value }, defaults: { category, value, config: config.value } });
   res.status(created ? 201 : 200).json(item);
+}));
+
+app.put("/api/masters/:category/:id", requireBodyObject, asyncRoute(async (req, res) => {
+  if (req.params.category !== "equipos") return res.status(400).json({ error: "Este maestro no admite configuración." });
+  const item = await MasterItem.findOne({ where: { id: req.params.id, category: "equipos" } });
+  if (!item) return res.status(404).json({ error: "Equipo no encontrado." });
+  const config = validateEquipmentConfig(req.body.config);
+  if (config.error) return res.status(400).json({ error: config.error });
+  await item.update({ config: config.value });
+  res.json(item);
 }));
 
 app.delete("/api/masters/:category/:id", asyncRoute(async (req, res) => {
@@ -574,6 +657,15 @@ async function start() {
   }
   await sequelize.authenticate();
   await sequelize.sync();
+  await sequelize.query('ALTER TABLE "master_items" ADD COLUMN IF NOT EXISTS "config" JSONB NOT NULL DEFAULT \'{}\'::jsonb');
+  await sequelize.query('ALTER TABLE "corrective_actions" ADD COLUMN IF NOT EXISTS "correction" TEXT NOT NULL DEFAULT \'\'');
+  await sequelize.query('ALTER TABLE "corrective_actions" ADD COLUMN IF NOT EXISTS "cause" TEXT NOT NULL DEFAULT \'\'');
+  await sequelize.query('ALTER TABLE "corrective_actions" ADD COLUMN IF NOT EXISTS "actionPlan" TEXT NOT NULL DEFAULT \'\'');
+  await sequelize.query('ALTER TABLE "corrective_actions" ADD COLUMN IF NOT EXISTS "evidence" TEXT NOT NULL DEFAULT \'\'');
+  await sequelize.query('ALTER TABLE "corrective_actions" ADD COLUMN IF NOT EXISTS "verification" TEXT NOT NULL DEFAULT \'\'');
+  await sequelize.query('ALTER TABLE "corrective_actions" ADD COLUMN IF NOT EXISTS "closedBy" VARCHAR(160) NOT NULL DEFAULT \'\'');
+  await sequelize.query('ALTER TABLE "corrective_actions" ADD COLUMN IF NOT EXISTS "closedOn" DATE');
+  await sequelize.query('ALTER TABLE "corrective_actions" ALTER COLUMN "e" TYPE VARCHAR(40)');
   for (const [moduleId, formats] of Object.entries(DEFAULT_FORMATS)) {
     for (const format of formats) {
       await Format.findOrCreate({

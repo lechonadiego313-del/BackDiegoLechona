@@ -28,6 +28,19 @@ test("evaluateRecord marks out-of-range numbers and negative checks", () => {
   assert.deepEqual(evaluateRecord(format, { Temperatura: "4", "Empaque íntegro": "Sí" }), []);
 });
 
+test("evaluateRecord supports equipment ranges and Cumple / No cumple fields", () => {
+  const format = { fields: [
+    { n: "Temperatura", t: "num", u: "°C", min: 0, max: 4 },
+    { n: "Condición", t: "cumple" },
+  ] };
+  assert.deepEqual(evaluateRecord(format, { Temperatura: "-10", Condición: "No cumple" }, {
+    Temperatura: { min: -20, max: -15, label: "Cava 1 (Congelación)" },
+  }), [
+    "Temperatura: -10 °C fuera de rango para Cava 1 (Congelación) [-20 a -15]",
+    "Condición: No cumple",
+  ]);
+});
+
 test("validateFormat rejects reversed numeric limits", () => {
   assert.match(validateFormat({
     name: "Temperatura",

@@ -29,7 +29,7 @@ API REST para la aplicación de gestión de calidad e inocuidad. Usa Node.js, Ex
    npm run dev
    ```
 
-La API escucha en `http://localhost:3000` por defecto. Para producción usa `npm start`; la plataforma debe proporcionar `DATABASE_URL`, `JWT_SECRET` y `CORS_ORIGIN`. El pool PostgreSQL usa por defecto un máximo de cinco conexiones por instancia; `DB_POOL_MAX`, `DB_POOL_MIN`, `DB_POOL_ACQUIRE_MS` y `DB_POOL_IDLE_MS` permiten ajustarlo dentro de límites validados. Considera todas las instancias del backend al fijar el total de conexiones permitido por el proveedor. No publiques el archivo `.env`.
+La API escucha en `https://backdiegolechona-1.onrender.com` por defecto. Para producción usa `npm start`; la plataforma debe proporcionar `DATABASE_URL`, `JWT_SECRET` y `CORS_ORIGIN`. El pool PostgreSQL usa por defecto un máximo de cinco conexiones por instancia; `DB_POOL_MAX`, `DB_POOL_MIN`, `DB_POOL_ACQUIRE_MS` y `DB_POOL_IDLE_MS` permiten ajustarlo dentro de límites validados. Considera todas las instancias del backend al fijar el total de conexiones permitido por el proveedor. No publiques el archivo `.env`.
 
 Para medir una publicación sin exponer sentencias SQL ni parámetros, activa opcionalmente `LOG_HTTP_TIMING=true` y/o `LOG_DB_TIMING=true` en la plataforma. Los logs HTTP omiten la query string; las respuestas incluyen `Server-Timing` para solicitudes normales. Estas métricas describen solo el tiempo observado por la API/Sequelize, no el tiempo total percibido por el navegador.
 

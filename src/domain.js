@@ -1,18 +1,21 @@
 const frequencies = new Set(["Diario", "Semanal", "Quincenal", "Mensual", "Por evento"]);
-const fieldTypes = new Set(["num", "txt", "date", "sel", "chk", "producto", "area", "punto", "proveedor", "cliente", "equipo", "lote"]);
+const fieldTypes = new Set(["num", "txt", "date", "sel", "chk", "cumple", "producto", "area", "punto", "proveedor", "cliente", "equipo", "lote"]);
 
-export function evaluateRecord(format, values) {
+export function evaluateRecord(format, values, dynamicRanges = {}) {
   const deviations = [];
   for (const field of format.fields) {
     const value = values[field.n];
     if (field.t === "num" && value !== "" && value != null && Number.isFinite(Number(value))) {
       const number = Number(value);
-      if ((field.min !== "" && field.min != null && number < Number(field.min)) ||
-          (field.max !== "" && field.max != null && number > Number(field.max))) {
-        deviations.push(`${field.n}: ${value}${field.u ? ` ${field.u}` : ""} fuera de rango [${field.min ?? "–"} a ${field.max ?? "–"}]`);
+      const range = dynamicRanges[field.n] || field;
+      if ((range.min !== "" && range.min != null && number < Number(range.min)) ||
+          (range.max !== "" && range.max != null && number > Number(range.max))) {
+        const source = range.label ? ` para ${range.label}` : "";
+        deviations.push(`${field.n}: ${value}${field.u ? ` ${field.u}` : ""} fuera de rango${source} [${range.min ?? "–"} a ${range.max ?? "–"}]`);
       }
     }
     if (field.t === "chk" && value === "No") deviations.push(`${field.n}: No conforme`);
+    if (field.t === "cumple" && value === "No cumple") deviations.push(`${field.n}: No cumple`);
   }
   return deviations;
 }
