@@ -1,0 +1,14 @@
+BEGIN;
+CREATE TYPE dispatch_sale_type AS ENUM ('retail', 'wholesale');
+CREATE TYPE dispatch_status AS ENUM ('confirmed', 'cancelled');
+CREATE TABLE dispatch_products (id UUID PRIMARY KEY, name VARCHAR(160) NOT NULL, "indirectPercentage" NUMERIC(7,4) NOT NULL DEFAULT 0 CHECK ("indirectPercentage" BETWEEN 0 AND 1000), active BOOLEAN NOT NULL DEFAULT TRUE, "createdBy" UUID NOT NULL REFERENCES users(id), "updatedBy" UUID NOT NULL REFERENCES users(id), "createdAt" TIMESTAMPTZ NOT NULL, "updatedAt" TIMESTAMPTZ NOT NULL);
+CREATE INDEX dispatch_products_active_name ON dispatch_products(active, name);
+CREATE TABLE dispatch_presentations (id UUID PRIMARY KEY, "productId" UUID NOT NULL REFERENCES dispatch_products(id), name VARCHAR(120) NOT NULL, "productionCost" NUMERIC(14,2) NOT NULL CHECK ("productionCost" >= 0), "retailPrice" NUMERIC(14,2) NOT NULL CHECK ("retailPrice" > 0), "wholesalePrice" NUMERIC(14,2) NOT NULL DEFAULT 0 CHECK ("wholesalePrice" >= 0), active BOOLEAN NOT NULL DEFAULT TRUE, "createdAt" TIMESTAMPTZ NOT NULL, "updatedAt" TIMESTAMPTZ NOT NULL, UNIQUE ("productId", name));
+CREATE INDEX dispatch_presentations_product_active ON dispatch_presentations("productId", active);
+CREATE TABLE dispatches (id UUID PRIMARY KEY, "dispatchNumber" VARCHAR(40) NOT NULL UNIQUE, "idempotencyKey" VARCHAR(80) NOT NULL UNIQUE, "customerName" VARCHAR(160) NOT NULL DEFAULT '', "saleType" dispatch_sale_type NOT NULL, "totalAmount" NUMERIC(16,2) NOT NULL CHECK ("totalAmount" >= 0), "totalCost" NUMERIC(16,2) NOT NULL CHECK ("totalCost" >= 0), status dispatch_status NOT NULL DEFAULT 'confirmed', "createdBy" UUID NOT NULL REFERENCES users(id), "cancelledBy" UUID REFERENCES users(id), "cancelledAt" TIMESTAMPTZ, "cancellationReason" VARCHAR(500), "createdAt" TIMESTAMPTZ NOT NULL, "updatedAt" TIMESTAMPTZ NOT NULL);
+CREATE INDEX dispatches_created_status ON dispatches("createdAt", status);
+CREATE INDEX dispatches_created_by ON dispatches("createdBy");
+CREATE TABLE dispatch_items (id UUID PRIMARY KEY, "dispatchId" UUID NOT NULL REFERENCES dispatches(id), "productId" UUID NOT NULL REFERENCES dispatch_products(id), "presentationId" UUID NOT NULL REFERENCES dispatch_presentations(id), "productNameSnapshot" VARCHAR(160) NOT NULL, "presentationNameSnapshot" VARCHAR(120) NOT NULL, quantity INTEGER NOT NULL CHECK (quantity > 0), "unitPrice" NUMERIC(14,2) NOT NULL CHECK ("unitPrice" >= 0), "unitCost" NUMERIC(14,2) NOT NULL CHECK ("unitCost" >= 0), subtotal NUMERIC(16,2) NOT NULL CHECK (subtotal >= 0), "totalCost" NUMERIC(16,2) NOT NULL CHECK ("totalCost" >= 0), "createdAt" TIMESTAMPTZ NOT NULL, "updatedAt" TIMESTAMPTZ NOT NULL);
+CREATE INDEX dispatch_items_dispatch ON dispatch_items("dispatchId");
+CREATE INDEX dispatch_items_product ON dispatch_items("productId");
+COMMIT;

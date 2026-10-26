@@ -153,3 +153,69 @@ export const User = sequelize.define(
   },
   { tableName: "users", timestamps: true },
 );
+
+export const DispatchProduct = sequelize.define("DispatchProduct", {
+  id: { type: DataTypes.UUID, primaryKey: true, defaultValue: DataTypes.UUIDV4 },
+  name: { type: DataTypes.STRING(160), allowNull: false },
+  indirectPercentage: { type: DataTypes.DECIMAL(7, 4), allowNull: false, defaultValue: 0 },
+  active: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
+  createdBy: { type: DataTypes.UUID, allowNull: false },
+  updatedBy: { type: DataTypes.UUID, allowNull: false },
+}, {
+  tableName: "dispatch_products",
+  timestamps: true,
+  indexes: [{ fields: ["active", "name"] }],
+});
+
+export const DispatchPresentation = sequelize.define("DispatchPresentation", {
+  id: { type: DataTypes.UUID, primaryKey: true, defaultValue: DataTypes.UUIDV4 },
+  productId: { type: DataTypes.UUID, allowNull: false },
+  name: { type: DataTypes.STRING(120), allowNull: false },
+  productionCost: { type: DataTypes.DECIMAL(14, 2), allowNull: false },
+  retailPrice: { type: DataTypes.DECIMAL(14, 2), allowNull: false },
+  wholesalePrice: { type: DataTypes.DECIMAL(14, 2), allowNull: false, defaultValue: 0 },
+  active: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
+}, {
+  tableName: "dispatch_presentations",
+  timestamps: true,
+  indexes: [{ unique: true, fields: ["productId", "name"] }, { fields: ["productId", "active"] }],
+});
+
+export const Dispatch = sequelize.define("Dispatch", {
+  id: { type: DataTypes.UUID, primaryKey: true, defaultValue: DataTypes.UUIDV4 },
+  dispatchNumber: { type: DataTypes.STRING(40), allowNull: false, unique: true },
+  idempotencyKey: { type: DataTypes.STRING(80), allowNull: false, unique: true },
+  customerName: { type: DataTypes.STRING(160), allowNull: false, defaultValue: "" },
+  saleType: { type: DataTypes.ENUM("retail", "wholesale"), allowNull: false },
+  totalAmount: { type: DataTypes.DECIMAL(16, 2), allowNull: false },
+  totalCost: { type: DataTypes.DECIMAL(16, 2), allowNull: false },
+  status: { type: DataTypes.ENUM("confirmed", "cancelled"), allowNull: false, defaultValue: "confirmed" },
+  createdBy: { type: DataTypes.UUID, allowNull: false },
+  cancelledBy: { type: DataTypes.UUID, allowNull: true },
+  cancelledAt: { type: DataTypes.DATE, allowNull: true },
+  cancellationReason: { type: DataTypes.STRING(500), allowNull: true },
+}, {
+  tableName: "dispatches",
+  timestamps: true,
+  indexes: [{ fields: ["createdAt", "status"] }, { fields: ["createdBy"] }],
+});
+
+export const DispatchItem = sequelize.define("DispatchItem", {
+  id: { type: DataTypes.UUID, primaryKey: true, defaultValue: DataTypes.UUIDV4 },
+  dispatchId: { type: DataTypes.UUID, allowNull: false },
+  productId: { type: DataTypes.UUID, allowNull: false },
+  presentationId: { type: DataTypes.UUID, allowNull: false },
+  productNameSnapshot: { type: DataTypes.STRING(160), allowNull: false },
+  presentationNameSnapshot: { type: DataTypes.STRING(120), allowNull: false },
+  quantity: { type: DataTypes.INTEGER, allowNull: false },
+  unitPrice: { type: DataTypes.DECIMAL(14, 2), allowNull: false },
+  unitCost: { type: DataTypes.DECIMAL(14, 2), allowNull: false },
+  subtotal: { type: DataTypes.DECIMAL(16, 2), allowNull: false },
+  totalCost: { type: DataTypes.DECIMAL(16, 2), allowNull: false },
+}, { tableName: "dispatch_items", timestamps: true, indexes: [{ fields: ["dispatchId"] }, { fields: ["productId"] }] });
+
+DispatchProduct.hasMany(DispatchPresentation, { as: "presentations", foreignKey: "productId" });
+DispatchPresentation.belongsTo(DispatchProduct, { as: "product", foreignKey: "productId" });
+Dispatch.hasMany(DispatchItem, { as: "items", foreignKey: "dispatchId" });
+DispatchItem.belongsTo(Dispatch, { as: "dispatch", foreignKey: "dispatchId" });
+Dispatch.belongsTo(User, { as: "creator", foreignKey: "createdBy" });

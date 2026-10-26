@@ -2,6 +2,19 @@
 
 API REST para la aplicación de gestión de calidad e inocuidad. Usa Node.js, Express, Sequelize y PostgreSQL en Neon.
 
+## Control de salidas
+
+El módulo usa las tablas `dispatch_products`, `dispatch_presentations`, `dispatches` y `dispatch_items`. Antes de desplegar una versión que incluya el módulo:
+
+1. Genera un backup verificable de Neon.
+2. Ejecuta `migrations/001_control_salidas_up.sql` una sola vez mediante el SQL Editor de Neon o `psql` dentro de una ventana de mantenimiento.
+3. Comprueba que la transacción finalizó y luego despliega backend y frontend.
+4. Crea el catálogo comercial desde la interfaz con una cuenta `super`.
+
+El script `001_control_salidas_down.sql` es una reversión destructiva y solo debe utilizarse después de exportar las cuatro tablas. El arranque conserva `sequelize.sync()` por compatibilidad con la instalación existente; la migración explícita debe ejecutarse primero en producción para aplicar restricciones e índices de forma controlada.
+
+Permisos: todos los usuarios autenticados pueden registrar y consultar salidas. Solo `super` recibe costos, indicadores, administración de productos y la operación de anulación. Los precios y costos se recalculan en el servidor y cada alta usa una clave de idempotencia.
+
 ## Requisitos
 
 - Node.js 20 o superior
@@ -29,7 +42,7 @@ API REST para la aplicación de gestión de calidad e inocuidad. Usa Node.js, Ex
    npm run dev
    ```
 
-La API escucha en `https://backdiegolechona-1.onrender.com` por defecto. Para producción usa `npm start`; la plataforma debe proporcionar `DATABASE_URL`, `JWT_SECRET` y `CORS_ORIGIN`. El pool PostgreSQL usa por defecto un máximo de cinco conexiones por instancia; `DB_POOL_MAX`, `DB_POOL_MIN`, `DB_POOL_ACQUIRE_MS` y `DB_POOL_IDLE_MS` permiten ajustarlo dentro de límites validados. Considera todas las instancias del backend al fijar el total de conexiones permitido por el proveedor. No publiques el archivo `.env`.
+La API escucha en `http://localhost:3000` por defecto. Para producción usa `npm start`; la plataforma debe proporcionar `DATABASE_URL`, `JWT_SECRET` y `CORS_ORIGIN`. El pool PostgreSQL usa por defecto un máximo de cinco conexiones por instancia; `DB_POOL_MAX`, `DB_POOL_MIN`, `DB_POOL_ACQUIRE_MS` y `DB_POOL_IDLE_MS` permiten ajustarlo dentro de límites validados. Considera todas las instancias del backend al fijar el total de conexiones permitido por el proveedor. No publiques el archivo `.env`.
 
 Para medir una publicación sin exponer sentencias SQL ni parámetros, activa opcionalmente `LOG_HTTP_TIMING=true` y/o `LOG_DB_TIMING=true` en la plataforma. Los logs HTTP omiten la query string; las respuestas incluyen `Server-Timing` para solicitudes normales. Estas métricas describen solo el tiempo observado por la API/Sequelize, no el tiempo total percibido por el navegador.
 

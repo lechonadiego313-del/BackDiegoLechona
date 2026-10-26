@@ -7,6 +7,7 @@ import { sequelize, Document, Format, Record, Schedule, CorrectiveAction, Master
 import { authenticate, publicUser, requireRoles, signAccessToken } from "./auth.js";
 import { DEFAULT_FORMATS, MASTER_CATEGORIES, MODULES } from "./modules.js";
 import { evaluateRecord, parsePagination, recordDateMatchesMonth, traceRecordsSql, validMonth, validateFormat } from "./domain.js";
+import dispatchRoutes from "./dispatch-routes.js";
 
 const app = express();
 const port = Number(process.env.PORT || 3000);
@@ -214,6 +215,7 @@ app.post("/api/auth/login", loginLimiter, requireBodyObject, asyncRoute(async (r
 }));
 
 app.use("/api", authenticate);
+app.use("/api", dispatchRoutes);
 
 app.get("/api/auth/me", (req, res) => res.json(publicUser(req.user)));
 
