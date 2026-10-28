@@ -1,5 +1,5 @@
 const frequencies = new Set(["Diario", "Semanal", "Quincenal", "Mensual", "Por evento"]);
-const fieldTypes = new Set(["num", "txt", "date", "sel", "chk", "cumple", "producto", "area", "punto", "proveedor", "cliente", "equipo", "lote"]);
+const fieldTypes = new Set(["num", "txt", "date", "sel", "chk", "cumple", "producto", "area", "punto", "proveedor", "cliente", "equipo", "responsable", "superficie", "utensilio", "tipo_plaga", "lote"]);
 
 export function evaluateRecord(format, values, dynamicRanges = {}) {
   const deviations = [];

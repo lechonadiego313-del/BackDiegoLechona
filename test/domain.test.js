@@ -54,6 +54,19 @@ test("validateFormat rejects reversed numeric limits", () => {
   }), "");
 });
 
+test("validateFormat accepts every fixed master field exposed by the frontend", () => {
+  assert.equal(validateFormat({
+    name: "POES",
+    freq: "Diario",
+    fields: [
+      { n: "Responsable", t: "responsable" },
+      { n: "Superficie", t: "superficie" },
+      { n: "Utensilio", t: "utensilio" },
+      { n: "Tipo de plaga", t: "tipo_plaga" },
+    ],
+  }), "");
+});
+
 test("parsePagination enforces bounded one-based pagination", () => {
   assert.deepEqual(parsePagination({ page: "3", limit: "10" }), {
     error: "",
