@@ -111,6 +111,23 @@ export const CorrectiveAction = sequelize.define(
   { tableName: "corrective_actions", timestamps: true },
 );
 
+export const ActionEvidence = sequelize.define(
+  "ActionEvidence",
+  {
+    id: { type: DataTypes.UUID, primaryKey: true, defaultValue: DataTypes.UUIDV4 },
+    actionId: { type: DataTypes.STRING(80), allowNull: false },
+    type: { type: DataTypes.STRING(40), allowNull: false, defaultValue: "Documento" },
+    description: { type: DataTypes.STRING(500), allowNull: false },
+    fileName: { type: DataTypes.STRING(255), allowNull: false },
+    mimeType: { type: DataTypes.STRING(120), allowNull: false },
+    data: { type: DataTypes.TEXT, allowNull: false },
+  },
+  { tableName: "action_evidences", timestamps: true, indexes: [{ fields: ["actionId"] }] },
+);
+
+CorrectiveAction.hasMany(ActionEvidence, { as: "evidences", foreignKey: "actionId", onDelete: "CASCADE" });
+ActionEvidence.belongsTo(CorrectiveAction, { as: "action", foreignKey: "actionId" });
+
 export const MasterItem = sequelize.define(
   "MasterItem",
   {

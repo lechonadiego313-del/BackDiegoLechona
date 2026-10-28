@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { Op } from "sequelize";
-import { Dispatch, DispatchItem, DispatchPresentation, DispatchProduct, User, sequelize } from "./database.js";
+import { Dispatch, DispatchItem, DispatchPresentation, DispatchProduct, Format, Record, User, sequelize } from "./database.js";
 import { centsToMoney, moneyToCents, periodRange, totalUnitCostCents, validateDispatchInput } from "./dispatch-domain.js";
 
 const router = Router();
@@ -177,6 +177,35 @@ router.get("/dispatch-analytics/summary", requireSuper, asyncRoute(async (req, r
   }
   const profit = sales - costs;
   res.json({ summary: { sales: centsToMoney(sales), costs: centsToMoney(costs), profit: centsToMoney(profit), margin: sales ? Number((profit * 100 / sales).toFixed(2)) : 0, units, orders: rows.length, averageTicket: centsToMoney(rows.length ? Math.round(sales / rows.length) : 0) }, sales: [...buckets].map(([date, value]) => ({ date, value: centsToMoney(value) })), products: [...products.values()].sort((a, b) => b.salesCents - a.salesCents).map((item) => ({ ...item, sales: centsToMoney(item.salesCents), costs: centsToMoney(item.costCents), profit: centsToMoney(item.salesCents - item.costCents), margin: item.salesCents ? Number(((item.salesCents - item.costCents) * 100 / item.salesCents).toFixed(2)) : 0, share: sales ? Number((item.salesCents * 100 / sales).toFixed(2)) : 0, salesCents: undefined, costCents: undefined })) });
+}));
+
+router.get("/dispatch-analytics/reconciliation", requireSuper, asyncRoute(async (req, res) => {
+  const range = periodRange(String(req.query.period || "month"), String(req.query.reference || ""));
+  if (!range) return res.status(400).json({ error: "El periodo o la fecha de referencia no son válidos." });
+  const from = range.start.toISOString().slice(0, 10);
+  const to = range.end.toISOString().slice(0, 10);
+  const [formats, productionRecords, dispatches] = await Promise.all([
+    Format.findAll({ where: { moduleId: "traz" }, attributes: ["id", "name", "fields"] }),
+    Record.findAll({ where: { moduleId: "traz", date: { [Op.gte]: from, [Op.lt]: to } }, order: [["date", "ASC"]] }),
+    Dispatch.findAll({ where: { status: "confirmed", createdAt: { [Op.gte]: range.start, [Op.lt]: range.end } }, include: [{ model: DispatchItem, as: "items" }], order: [["createdAt", "ASC"]] }),
+  ]);
+  const productionFormats = new Map(formats.filter((format) => format.id === "f_prod" || /producci[oó]n/i.test(format.name)).map((format) => [format.id, format]));
+  const products = new Map();
+  let productionTotal = 0; let dispatchedTotal = 0; let salesCents = 0;
+  const getProduct = (name) => { const key = String(name || "Sin producto").trim().toLocaleLowerCase("es"); if (!products.has(key)) products.set(key, { product: String(name || "Sin producto").trim(), producedKg: 0, dispatchedUnits: 0, salesCents: 0 }); return products.get(key); };
+  for (const record of productionRecords) {
+    const format = productionFormats.get(record.fmt); if (!format) continue;
+    const productField = format.fields.find((field) => field.t === "producto" || /^producto$/i.test(field.n));
+    const quantityField = format.fields.find((field) => /cantidad producida/i.test(field.n));
+    const quantity = Number(quantityField ? record.vals?.[quantityField.n] : NaN);
+    if (!Number.isFinite(quantity)) continue;
+    productionTotal += quantity; getProduct(productField ? record.vals?.[productField.n] : "Sin producto").producedKg += quantity;
+  }
+  for (const dispatch of dispatches) for (const item of dispatch.items) {
+    dispatchedTotal += item.quantity; salesCents += moneyToCents(item.subtotal) || 0;
+    const row = getProduct(item.productNameSnapshot); row.dispatchedUnits += item.quantity; row.salesCents += moneyToCents(item.subtotal) || 0;
+  }
+  res.json({ period: { from, toExclusive: to }, dispatchWindow: { firstAt: dispatches[0]?.createdAt || null, lastAt: dispatches.at(-1)?.createdAt || null }, summary: { producedKg: productionTotal, dispatchedUnits: dispatchedTotal, sales: centsToMoney(salesCents), productionRecords: productionRecords.filter((record) => productionFormats.has(record.fmt)).length, dispatches: dispatches.length }, products: [...products.values()].sort((a, b) => a.product.localeCompare(b.product, "es")).map((row) => ({ ...row, sales: centsToMoney(row.salesCents), salesCents: undefined })), warning: "No se calcula diferencia contra inventario físico: faltan un conteo físico persistente por producto/presentación y factores confiables de conversión entre kg y cada unidad o presentación despachada." });
 }));
 
 export default router;

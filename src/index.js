@@ -3,7 +3,7 @@ import cors from "cors";
 import bcrypt from "bcryptjs";
 import { rateLimit } from "express-rate-limit";
 import { Op } from "sequelize";
-import { sequelize, Document, Format, Record, Schedule, CorrectiveAction, MasterItem, AppSetting, User } from "./database.js";
+import { sequelize, Document, Format, Record, Schedule, CorrectiveAction, ActionEvidence, MasterItem, AppSetting, User } from "./database.js";
 import { authenticate, publicUser, requireRoles, signAccessToken } from "./auth.js";
 import { DEFAULT_FORMATS, MASTER_CATEGORIES, MODULES } from "./modules.js";
 import { evaluateRecord, parsePagination, recordDateMatchesMonth, traceRecordsSql, validMonth, validateFormat } from "./domain.js";
@@ -88,7 +88,7 @@ async function getProgram(moduleId, includeDocumentData = false, recordMonth = "
       ? Record.findAll({ where: recordWhere, order: [["date", "DESC"], ["createdAt", "DESC"]] })
       : Promise.resolve([]),
     Schedule.findAll({ where: { moduleId }, order: [["date", "ASC"]] }),
-    CorrectiveAction.findAll({ where: { moduleId }, order: [["createdAt", "DESC"]] }),
+    CorrectiveAction.findAll({ where: { moduleId }, include: [{ model: ActionEvidence, as: "evidences", attributes: { exclude: ["data"] } }], order: [["createdAt", "DESC"]] }),
   ]);
   return { documents, formats, records, schedules, actions };
 }
@@ -113,6 +113,13 @@ function validateEquipmentConfig(rawConfig) {
     return { error: "El rango del equipo debe tener un mínimo y máximo válidos." };
   }
   return { error: "", value: { type, min, max } };
+}
+
+function validatePersonnelConfig(rawConfig) {
+  const config = rawConfig && typeof rawConfig === "object" && !Array.isArray(rawConfig) ? rawConfig : {};
+  const cargo = String(config.cargo || "").trim();
+  if (!cargo) return { error: "El cargo del integrante del personal es obligatorio." };
+  return { error: "", value: { cargo: cargo.slice(0, 120) } };
 }
 
 async function makeReport(ids, month) {
@@ -315,6 +322,7 @@ app.get("/api/modules/:moduleId/:resource", requireModule, asyncRoute(async (req
       : [[resource[1], "ASC"], ["id", "ASC"]],
   };
   if (req.params.resource === "documents") query.attributes = { exclude: ["data"] };
+  if (req.params.resource === "actions") query.include = [{ model: ActionEvidence, as: "evidences", attributes: { exclude: ["data"] } }];
   if (req.params.resource === "records") {
     const month = String(req.query.month || "");
     if (month && !validMonth(month)) return res.status(400).json({ error: "El mes debe tener el formato AAAA-MM." });
@@ -504,7 +512,8 @@ app.post("/api/modules/:moduleId/actions/:id/close", requireModule, requireBodyO
   if (!action) return res.status(404).json({ error: "Acción abierta no encontrada." });
   const detail = String(req.body.cierre || "").trim();
   const closedBy = String(req.body.closedBy || "").trim();
-  if (![action.correction, action.cause, action.actionPlan, action.evidence, detail, closedBy].every(Boolean)) {
+  const evidenceCount = await ActionEvidence.count({ where: { actionId: action.id } });
+  if (![action.correction, action.cause, action.actionPlan, detail, closedBy].every(Boolean) || (!action.evidence && evidenceCount === 0)) {
     return res.status(400).json({ error: "Completa la gestión y la verificación antes de cerrar la acción." });
   }
   await action.update({ e: "Cerrada", verification: detail, closedBy, closedOn: today(), cierre: `${detail} (${today()})` });
@@ -530,8 +539,9 @@ app.put("/api/modules/:moduleId/actions/:id", requireModule, requireBodyObject, 
     return res.status(400).json({ error: "La fecha límite no es válida." });
   }
   if (next.e === "Cerrada") {
-    const required = [next.correction, next.cause, next.actionPlan, next.evidence, next.verification, next.closedBy];
-    if (required.some((value) => !value)) {
+    const evidenceCount = await ActionEvidence.count({ where: { actionId: action.id } });
+    const required = [next.correction, next.cause, next.actionPlan, next.verification, next.closedBy];
+    if (required.some((value) => !value) || (!next.evidence && evidenceCount === 0)) {
       return res.status(400).json({ error: "Para cerrar debes completar corrección, causa, plan, evidencia, verificación y responsable del cierre." });
     }
     next.closedOn = today();
@@ -542,6 +552,40 @@ app.put("/api/modules/:moduleId/actions/:id", requireModule, requireBodyObject, 
   }
   await action.update(next);
   res.json(action);
+}));
+
+const evidenceTypes = new Set(["Documento", "Fotografía", "Registro", "Orden de trabajo", "Otro"]);
+
+app.post("/api/modules/:moduleId/actions/:id/evidences", requireModule, requireBodyObject, asyncRoute(async (req, res) => {
+  const action = await CorrectiveAction.findOne({ where: { id: req.params.id, moduleId: req.params.moduleId } });
+  if (!action) return res.status(404).json({ error: "Acción correctiva no encontrada." });
+  const type = String(req.body.type || "").trim();
+  const description = String(req.body.description || "").trim();
+  const fileName = String(req.body.fileName || "").trim().slice(0, 255);
+  const mimeType = String(req.body.mimeType || "application/octet-stream").trim().slice(0, 120);
+  const data = String(req.body.data || "");
+  if (!evidenceTypes.has(type)) return res.status(400).json({ error: "El tipo de evidencia no es válido." });
+  if (!description) return res.status(400).json({ error: "La descripción de la evidencia es obligatoria." });
+  if (!fileName || !data.startsWith("data:") || data.length > 2_100_000) return res.status(413).json({ error: "Adjunta un archivo o fotografía válido de máximo 1,5 MB." });
+  const evidence = await ActionEvidence.create({ actionId: action.id, type, description: description.slice(0, 500), fileName, mimeType, data });
+  const result = evidence.toJSON(); delete result.data;
+  res.status(201).json(result);
+}));
+
+app.get("/api/modules/:moduleId/actions/:actionId/evidences/:id", requireModule, asyncRoute(async (req, res) => {
+  const action = await CorrectiveAction.findOne({ where: { id: req.params.actionId, moduleId: req.params.moduleId } });
+  if (!action) return res.status(404).json({ error: "Acción correctiva no encontrada." });
+  const evidence = await ActionEvidence.findOne({ where: { id: req.params.id, actionId: action.id } });
+  if (!evidence) return res.status(404).json({ error: "Evidencia no encontrada." });
+  res.json(evidence);
+}));
+
+app.delete("/api/modules/:moduleId/actions/:actionId/evidences/:id", requireModule, asyncRoute(async (req, res) => {
+  const action = await CorrectiveAction.findOne({ where: { id: req.params.actionId, moduleId: req.params.moduleId } });
+  if (!action) return res.status(404).json({ error: "Acción correctiva no encontrada." });
+  const count = await ActionEvidence.destroy({ where: { id: req.params.id, actionId: action.id } });
+  if (!count) return res.status(404).json({ error: "Evidencia no encontrada." });
+  res.status(204).end();
 }));
 
 app.delete("/api/modules/:moduleId/actions/:id", requireModule, asyncRoute(async (req, res) => {
@@ -563,7 +607,7 @@ app.post("/api/masters/:category", requireBodyObject, asyncRoute(async (req, res
   const value = String(req.body.value || "").trim();
   if (!Object.hasOwn(MASTER_CATEGORIES, category)) return res.status(404).json({ error: "Tipo de maestro no encontrado." });
   if (!value) return res.status(400).json({ error: "El valor es obligatorio." });
-  const config = category === "equipos" ? validateEquipmentConfig(req.body.config) : { error: "", value: {} };
+  const config = category === "equipos" ? validateEquipmentConfig(req.body.config) : category === "personal" ? validatePersonnelConfig(req.body.config) : { error: "", value: {} };
   if (config.error) return res.status(400).json({ error: config.error });
   const [item, created] = await MasterItem.findOrCreate({ where: { category, value }, defaults: { category, value, config: config.value } });
   res.status(created ? 201 : 200).json(item);
@@ -668,6 +712,9 @@ async function start() {
   await sequelize.query('ALTER TABLE "corrective_actions" ADD COLUMN IF NOT EXISTS "closedBy" VARCHAR(160) NOT NULL DEFAULT \'\'');
   await sequelize.query('ALTER TABLE "corrective_actions" ADD COLUMN IF NOT EXISTS "closedOn" DATE');
   await sequelize.query('ALTER TABLE "corrective_actions" ALTER COLUMN "e" TYPE VARCHAR(40)');
+  for (const value of ["Cucarachas", "Hormigas", "Roedores", "Voladores", "Insectos"]) {
+    await MasterItem.findOrCreate({ where: { category: "tipos_plagas", value }, defaults: { category: "tipos_plagas", value, config: {} } });
+  }
   for (const [moduleId, formats] of Object.entries(DEFAULT_FORMATS)) {
     for (const format of formats) {
       await Format.findOrCreate({

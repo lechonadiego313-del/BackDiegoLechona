@@ -24,6 +24,10 @@ export const MASTER_CATEGORIES = {
   proveedores: "Proveedores",
   clientes: "Clientes",
   equipos: "Equipos / cámaras",
+  personal: "Personal",
+  superficies: "Superficies",
+  utensilios: "Utensilios",
+  tipos_plagas: "Tipos de plagas",
 };
 
 export const DEFAULT_FORMATS = {
@@ -123,6 +127,7 @@ export const DEFAULT_FORMATS = {
       freq: "Semanal",
       fields: [
         { n: "Área", t: "area", u: "", min: "", max: "" },
+        { n: "Tipo de plaga", t: "tipo_plaga", u: "", min: "", max: "" },
         { n: "Evidencia de plagas", t: "chk", u: "", min: "", max: "" },
         { n: "Estaciones revisadas", t: "num", u: "", min: 0, max: "" },
       ],
