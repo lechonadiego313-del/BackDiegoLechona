@@ -1,5 +1,19 @@
 const frequencies = new Set(["Diario", "Semanal", "Quincenal", "Mensual", "Por evento"]);
-const fieldTypes = new Set(["num", "txt", "date", "sel", "chk", "cumple", "producto", "area", "punto", "proveedor", "cliente", "equipo", "responsable", "superficie", "utensilio", "tipo_plaga", "lote"]);
+const fieldTypes = new Set(["num", "txt", "date", "time", "sel", "chk", "cumple", "producto", "area", "punto", "proveedor", "cliente", "equipo", "responsable", "superficie", "utensilio", "tipo_plaga", "lote"]);
+
+export function validateRecordValues(format, values) {
+  for (const field of format.fields) {
+    const value = values[field.n];
+    if (field.t === "num" && value !== "" && value != null && !Number.isFinite(Number(value))) {
+      return "Cada campo numérico debe contener un número válido.";
+    }
+    if (field.t === "time" && value !== "" && value != null &&
+        (typeof value !== "string" || !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value))) {
+      return `La hora de "${field.n}" debe tener el formato HH:mm.`;
+    }
+  }
+  return "";
+}
 
 export function evaluateRecord(format, values, dynamicRanges = {}) {
   const deviations = [];

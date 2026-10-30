@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { evaluateRecord, parsePagination, recordDateMatchesMonth, traceRecordsSql, validMonth, validateFormat, validateRecordTimes } from "../src/domain.js";
+import { evaluateRecord, parsePagination, recordDateMatchesMonth, traceRecordsSql, validMonth, validateFormat, validateRecordTimes, validateRecordValues } from "../src/domain.js";
 
 test("validMonth accepts only valid YYYY-MM values", () => {
   assert.equal(validMonth("2026-10"), true);
@@ -65,6 +65,21 @@ test("validateFormat accepts every fixed master field exposed by the frontend", 
       { n: "Tipo de plaga", t: "tipo_plaga" },
     ],
   }), "");
+});
+
+test("time is a valid independent field type with canonical record values", () => {
+  const format = { fields: [{ n: "Hora de revisión", t: "time" }] };
+  assert.equal(validateFormat({ name: "Revisión", freq: "Diario", fields: format.fields }), "");
+  assert.equal(validateRecordValues(format, { "Hora de revisión": "08:35" }), "");
+  assert.equal(validateRecordValues(format, { "Hora de revisión": "" }), "");
+  assert.match(validateRecordValues(format, { "Hora de revisión": "8:35" }), /HH:mm/);
+  assert.match(validateRecordValues(format, { "Hora de revisión": "24:00" }), /HH:mm/);
+});
+
+test("record value validation preserves numeric validation", () => {
+  const format = { fields: [{ n: "Temperatura", t: "num" }] };
+  assert.equal(validateRecordValues(format, { Temperatura: "4.5" }), "");
+  assert.match(validateRecordValues(format, { Temperatura: "cuatro" }), /número válido/);
 });
 
 test("validateFormat allows a time only on Cumple / No cumple fields", () => {

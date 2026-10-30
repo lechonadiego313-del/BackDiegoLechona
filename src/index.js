@@ -6,7 +6,7 @@ import { Op } from "sequelize";
 import { sequelize, Document, Format, Record, Schedule, CorrectiveAction, ActionEvidence, MasterItem, AppSetting, User } from "./database.js";
 import { authenticate, publicUser, requireRoles, signAccessToken } from "./auth.js";
 import { DEFAULT_FORMATS, MASTER_CATEGORIES, MODULES } from "./modules.js";
-import { evaluateRecord, parsePagination, recordDateMatchesMonth, traceRecordsSql, validMonth, validateFormat, validateRecordTimes } from "./domain.js";
+import { evaluateRecord, parsePagination, recordDateMatchesMonth, traceRecordsSql, validMonth, validateFormat, validateRecordTimes, validateRecordValues } from "./domain.js";
 import dispatchRoutes from "./dispatch-routes.js";
 
 const app = express();
@@ -419,11 +419,8 @@ app.post("/api/modules/:moduleId/records", requireModule, requireBodyObject, asy
   if (!format) return res.status(400).json({ error: "El formato indicado no existe en este programa." });
   const timeValidationError = validateRecordTimes(format, times);
   if (timeValidationError) return res.status(400).json({ error: timeValidationError });
-  const hasInvalidNumber = format.fields.some((field) => {
-    const value = vals[field.n];
-    return field.t === "num" && value !== "" && value != null && !Number.isFinite(Number(value));
-  });
-  if (hasInvalidNumber) return res.status(400).json({ error: "Cada campo numérico debe contener un número válido." });
+  const valueValidationError = validateRecordValues(format, vals);
+  if (valueValidationError) return res.status(400).json({ error: valueValidationError });
   let dynamicRanges = {};
   const equipmentField = format.fields.find((field) => field.t === "equipo");
   const equipmentValue = equipmentField ? vals[equipmentField.n] : "";
