@@ -6,7 +6,7 @@ import { Op } from "sequelize";
 import { sequelize, Document, Format, Record, Schedule, CorrectiveAction, ActionEvidence, MasterItem, AppSetting, User } from "./database.js";
 import { authenticate, publicUser, requireRoles, signAccessToken } from "./auth.js";
 import { DEFAULT_FORMATS, MASTER_CATEGORIES, MODULES } from "./modules.js";
-import { evaluateRecord, parsePagination, recordDateMatchesMonth, traceRecordsSql, validMonth, validateFormat } from "./domain.js";
+import { evaluateRecord, parsePagination, recordDateMatchesMonth, traceRecordsSql, validMonth, validateFormat, validateRecordTimes } from "./domain.js";
 import dispatchRoutes from "./dispatch-routes.js";
 
 const app = express();
@@ -132,7 +132,7 @@ async function makeReport(ids, month) {
   const [records, formats, actions, schedules, documents] = await Promise.all([
     Record.findAll({
       where: { moduleId: { [Op.in]: ids }, date: { [Op.gte]: `${month}-01`, [Op.lt]: nextMonth } },
-      attributes: ["id", "moduleId", "fmt", "date", "resp", "vals", "devs", "obs"],
+      attributes: ["id", "moduleId", "fmt", "date", "resp", "vals", "times", "devs", "obs"],
     }),
     Format.findAll({ where: { moduleId: { [Op.in]: ids } }, attributes: ["id", "moduleId", "name"] }),
     CorrectiveAction.findAll({
@@ -165,6 +165,7 @@ async function makeReport(ids, month) {
       date: record.date,
       responsible: record.resp,
       values: record.vals,
+      times: record.times,
       deviations: record.devs,
       observations: record.obs,
     });
@@ -405,7 +406,7 @@ app.delete("/api/modules/:moduleId/formats/:id", requireModule, asyncRoute(async
 }));
 
 app.post("/api/modules/:moduleId/records", requireModule, requireBodyObject, asyncRoute(async (req, res) => {
-  const { fmt, date, resp = "", obs = "", vals = {} } = req.body;
+  const { fmt, date, resp = "", obs = "", vals = {}, times = {} } = req.body;
   if (!fmt || !date || !vals || typeof vals !== "object" || Array.isArray(vals)) {
     return res.status(400).json({ error: "Formato, fecha y valores del registro son obligatorios." });
   }
@@ -416,6 +417,8 @@ app.post("/api/modules/:moduleId/records", requireModule, requireBodyObject, asy
   }
   const format = await Format.findOne({ where: { id: fmt, moduleId: req.params.moduleId } });
   if (!format) return res.status(400).json({ error: "El formato indicado no existe en este programa." });
+  const timeValidationError = validateRecordTimes(format, times);
+  if (timeValidationError) return res.status(400).json({ error: timeValidationError });
   const hasInvalidNumber = format.fields.some((field) => {
     const value = vals[field.n];
     return field.t === "num" && value !== "" && value != null && !Number.isFinite(Number(value));
@@ -439,7 +442,7 @@ app.post("/api/modules/:moduleId/records", requireModule, requireBodyObject, asy
   }
   const devs = evaluateRecord(format, vals, dynamicRanges);
   const result = await sequelize.transaction(async (transaction) => {
-    const record = await Record.create({ moduleId: req.params.moduleId, fmt, date, resp, obs, vals, devs }, { transaction });
+    const record = await Record.create({ moduleId: req.params.moduleId, fmt, date, resp, obs, vals, times, devs }, { transaction });
     let action = null;
     if (devs.length) {
       action = await CorrectiveAction.create({
@@ -703,6 +706,7 @@ async function start() {
   }
   await sequelize.authenticate();
   await sequelize.sync();
+  await sequelize.query('ALTER TABLE "records" ADD COLUMN IF NOT EXISTS "times" JSONB NOT NULL DEFAULT \'{}\'::jsonb');
   await sequelize.query('ALTER TABLE "master_items" ADD COLUMN IF NOT EXISTS "config" JSONB NOT NULL DEFAULT \'{}\'::jsonb');
   await sequelize.query('ALTER TABLE "corrective_actions" ADD COLUMN IF NOT EXISTS "correction" TEXT NOT NULL DEFAULT \'\'');
   await sequelize.query('ALTER TABLE "corrective_actions" ADD COLUMN IF NOT EXISTS "cause" TEXT NOT NULL DEFAULT \'\'');

@@ -58,6 +58,8 @@ GET /api/modules/agua/records?month=2026-10&format=ID_FORMATO&page=1&limit=10
 
 La respuesta paginada contiene `items`, `total`, `page`, `pageSize` y `pages`. La interfaz usa esta ruta para consultar solo la página visible de registros. Los registros nuevos deben pertenecer al mes de trabajo seleccionado.
 
+Los campos `Cumple / No cumple` pueden configurarse con una hora opcional. Al diligenciar el formato, la hora se captura como `HH:mm` y se guarda por nombre de punto en `records.times` (JSONB), separada de `records.vals`; los registros anteriores se sirven con el objeto vacío por defecto y no requieren cambios. El arranque del servidor agrega esta columna de forma idempotente.
+
 ## Autenticación
 
 `GET /api/health` y `POST /api/auth/login` son públicos. Los demás endpoints requieren un JWT en el encabezado `Authorization: Bearer <token>`. Los tokens vencen en 8 horas.

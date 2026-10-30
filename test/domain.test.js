@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { evaluateRecord, parsePagination, recordDateMatchesMonth, traceRecordsSql, validMonth, validateFormat } from "../src/domain.js";
+import { evaluateRecord, parsePagination, recordDateMatchesMonth, traceRecordsSql, validMonth, validateFormat, validateRecordTimes } from "../src/domain.js";
 
 test("validMonth accepts only valid YYYY-MM values", () => {
   assert.equal(validMonth("2026-10"), true);
@@ -65,6 +65,53 @@ test("validateFormat accepts every fixed master field exposed by the frontend", 
       { n: "Tipo de plaga", t: "tipo_plaga" },
     ],
   }), "");
+});
+
+test("validateFormat allows a time only on Cumple / No cumple fields", () => {
+  assert.equal(validateFormat({
+    name: "Inspección",
+    freq: "Diario",
+    fields: [{ n: "Higiene de manos", t: "cumple", includeTime: true }],
+  }), "");
+  assert.match(validateFormat({
+    name: "Inspección",
+    freq: "Diario",
+    fields: [{ n: "Hora de inspección", t: "date", includeTime: true }],
+  }), /Solo los campos/);
+  assert.match(validateFormat({
+    name: "Inspección",
+    freq: "Diario",
+    fields: [
+      { n: "Higiene de manos", t: "cumple", includeTime: true },
+      { n: "Higiene de manos", t: "cumple", includeTime: true },
+    ],
+  }), /nombres únicos/);
+});
+
+test("validateRecordTimes accepts only valid times for configured compliance fields", () => {
+  const format = { fields: [
+    { n: "Higiene de manos", t: "cumple", includeTime: true },
+    { n: "Uniforme", t: "cumple" },
+  ] };
+  assert.equal(validateRecordTimes(format, { "Higiene de manos": "08:35" }), "");
+  assert.equal(validateRecordTimes(format, {}), "");
+  assert.equal(validateRecordTimes(format, undefined), "Las horas del registro deben enviarse como un objeto.");
+  assert.match(validateRecordTimes(format, { "Higiene de manos": "25:00" }), /HH:mm/);
+  assert.match(validateRecordTimes(format, { Uniforme: "08:35" }), /no tiene una hora configurada/);
+});
+
+test("required inspection times must be enabled and present", () => {
+  assert.match(validateFormat({
+    name: "Inspección",
+    freq: "Diario",
+    fields: [{ n: "Higiene", t: "cumple", includeTime: false, timeRequired: true }],
+  }), /debe estar habilitada/);
+  const format = { fields: [
+    { n: "Higiene", t: "cumple", includeTime: true, timeRequired: true },
+    { n: "Uniforme", t: "cumple", includeTime: true, timeRequired: false },
+  ] };
+  assert.match(validateRecordTimes(format, { Higiene: "", Uniforme: "" }), /obligatoria/);
+  assert.equal(validateRecordTimes(format, { Higiene: "07:15", Uniforme: "" }), "");
 });
 
 test("parsePagination enforces bounded one-based pagination", () => {

@@ -71,6 +71,7 @@ export const Record = sequelize.define(
     resp: { type: DataTypes.STRING(160), allowNull: false, defaultValue: "" },
     obs: { type: DataTypes.TEXT, allowNull: false, defaultValue: "" },
     vals: { type: DataTypes.JSONB, allowNull: false, defaultValue: {} },
+    times: { type: DataTypes.JSONB, allowNull: false, defaultValue: {} },
     devs: { type: DataTypes.JSONB, allowNull: false, defaultValue: [] },
   },
   { tableName: "records", timestamps: true },
