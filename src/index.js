@@ -5,8 +5,8 @@ import { rateLimit } from "express-rate-limit";
 import { Op } from "sequelize";
 import { sequelize, Document, Format, Record, Schedule, CorrectiveAction, ActionEvidence, MasterItem, AppSetting, User } from "./database.js";
 import { authenticate, publicUser, requireRoles, signAccessToken } from "./auth.js";
-import { DEFAULT_FORMATS, MASTER_CATEGORIES, MODULES } from "./modules.js";
-import { evaluateRecord, parsePagination, recordDateMatchesMonth, traceRecordsSql, validMonth, validateFormat, validateRecordTimes, validateRecordValues } from "./domain.js";
+import { DEFAULT_FORMATS, inferredFormatConfig, MASTER_CATEGORIES, MODULES } from "./modules.js";
+import { evaluateBulkRecord, evaluateRecord, parsePagination, recordDateMatchesMonth, traceRecordsSql, validMonth, validateBulkValues, validateFormat, validateRecordTimes, validateRecordValues } from "./domain.js";
 import dispatchRoutes from "./dispatch-routes.js";
 
 const app = express();
@@ -15,6 +15,13 @@ const moduleIds = new Set(MODULES.map(([id]) => id));
 const scheduleIntervals = new Set(["Única", "1", "7", "15", "30", "90", "180", "365"]);
 const userRoles = new Set(["super", "user_admin", "user"]);
 const actionStates = new Set(["Abierta", "En proceso", "Pendiente de verificación", "Cerrada"]);
+
+function resolvedFormatConfig(moduleId, name, requestedConfig = {}) {
+  const normalizedName = String(name || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase();
+  if (moduleId === "lyd" && normalizedName.includes("CONCENTRACION")) return { bulkMode: "none", defaultResult: "" };
+  const inferred = inferredFormatConfig(moduleId, name);
+  return inferred.bulkMode === "none" ? requestedConfig : inferred;
+}
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   limit: 10,
@@ -281,7 +288,7 @@ app.patch("/api/auth/users/:id/status", requireRoles("super", "user_admin"), req
 app.get("/api/bootstrap", asyncRoute(async (_req, res) => {
   const [masterRows, formats, lastBackup] = await Promise.all([
     MasterItem.findAll({ order: [["category", "ASC"], ["value", "ASC"]] }),
-    Format.findAll({ attributes: ["id", "moduleId", "name", "fields"], order: [["createdAt", "ASC"]] }),
+    Format.findAll({ attributes: ["id", "moduleId", "name", "fields", "config"], order: [["createdAt", "ASC"]] }),
     getLastBackup(),
   ]);
   const masters = Object.fromEntries(Object.keys(MASTER_CATEGORIES).map((category) => [category, []]));
@@ -382,20 +389,22 @@ app.delete("/api/modules/:moduleId/documents/:id", requireModule, asyncRoute(asy
 }));
 
 app.post("/api/modules/:moduleId/formats", requireModule, requireBodyObject, asyncRoute(async (req, res) => {
-  const { name, freq, fields } = req.body;
-  const validationError = validateFormat(req.body);
+  const { name, freq, fields, config = {} } = req.body;
+  const effectiveConfig = resolvedFormatConfig(req.params.moduleId, name, config);
+  const validationError = validateFormat({ ...req.body, config: effectiveConfig });
   if (validationError) return res.status(400).json({ error: validationError });
-  const format = await Format.create({ moduleId: req.params.moduleId, name: String(name).trim(), freq, fields });
+  const format = await Format.create({ moduleId: req.params.moduleId, name: String(name).trim(), freq, fields, config: effectiveConfig });
   res.status(201).json(format);
 }));
 
 app.put("/api/modules/:moduleId/formats/:id", requireModule, requireBodyObject, asyncRoute(async (req, res) => {
   const format = await Format.findOne({ where: { id: req.params.id, moduleId: req.params.moduleId } });
   if (!format) return res.status(404).json({ error: "Formato no encontrado." });
-  const { name, freq, fields } = req.body;
-  const validationError = validateFormat(req.body);
+  const { name, freq, fields, config = {} } = req.body;
+  const effectiveConfig = resolvedFormatConfig(req.params.moduleId, name, config);
+  const validationError = validateFormat({ ...req.body, config: effectiveConfig });
   if (validationError) return res.status(400).json({ error: validationError });
-  await format.update({ name: String(name).trim(), freq, fields });
+  await format.update({ name: String(name).trim(), freq, fields, config: effectiveConfig });
   res.json(format);
 }));
 
@@ -419,8 +428,27 @@ app.post("/api/modules/:moduleId/records", requireModule, requireBodyObject, asy
   if (!format) return res.status(400).json({ error: "El formato indicado no existe en este programa." });
   const timeValidationError = validateRecordTimes(format, times);
   if (timeValidationError) return res.status(400).json({ error: timeValidationError });
+  const bulkValidationError = validateBulkValues(format, vals);
+  if (bulkValidationError) return res.status(400).json({ error: bulkValidationError });
   const valueValidationError = validateRecordValues(format, vals);
   if (valueValidationError) return res.status(400).json({ error: valueValidationError });
+  const bulkMode = format.config?.bulkMode || "none";
+  if (bulkMode !== "none") {
+    const category = bulkMode === "personnel" ? "personal" : "superficies";
+    const submittedItems = vals.__bulk.items;
+    const masterRows = await MasterItem.findAll({ where: { category, id: { [Op.in]: submittedItems.map((item) => item.masterId) } } });
+    const mastersById = new Map(masterRows.map((item) => [item.id, item]));
+    if (mastersById.size !== submittedItems.length) return res.status(400).json({ error: "Uno o más elementos del maestro ya no existen." });
+    if (bulkMode === "surfaces") {
+      const surfaceCount = await MasterItem.count({ where: { category: "superficies" } });
+      if (surfaceCount !== submittedItems.length) return res.status(400).json({ error: "Debes revisar todas las superficies registradas." });
+    }
+    vals.__bulk.items = submittedItems.map((item) => ({
+      masterId: item.masterId,
+      masterName: mastersById.get(item.masterId).value,
+      ...(bulkMode === "personnel" ? { results: item.results } : { result: item.result }),
+    }));
+  }
   let dynamicRanges = {};
   const equipmentField = format.fields.find((field) => field.t === "equipo");
   const equipmentValue = equipmentField ? vals[equipmentField.n] : "";
@@ -437,7 +465,7 @@ app.post("/api/modules/:moduleId/records", requireModule, requireBodyObject, asy
       };
     }
   }
-  const devs = evaluateRecord(format, vals, dynamicRanges);
+  const devs = [...evaluateRecord(format, vals, dynamicRanges), ...evaluateBulkRecord(format, vals)];
   const result = await sequelize.transaction(async (transaction) => {
     const record = await Record.create({ moduleId: req.params.moduleId, fmt, date, resp, obs, vals, times, devs }, { transaction });
     let action = null;
@@ -703,6 +731,7 @@ async function start() {
   }
   await sequelize.authenticate();
   await sequelize.sync();
+  await sequelize.query('ALTER TABLE "formats" ADD COLUMN IF NOT EXISTS "config" JSONB NOT NULL DEFAULT \'{}\'::jsonb');
   await sequelize.query('ALTER TABLE "records" ADD COLUMN IF NOT EXISTS "times" JSONB NOT NULL DEFAULT \'{}\'::jsonb');
   await sequelize.query('ALTER TABLE "master_items" ADD COLUMN IF NOT EXISTS "config" JSONB NOT NULL DEFAULT \'{}\'::jsonb');
   await sequelize.query('ALTER TABLE "corrective_actions" ADD COLUMN IF NOT EXISTS "correction" TEXT NOT NULL DEFAULT \'\'');
@@ -723,6 +752,11 @@ async function start() {
         defaults: { moduleId, ...format },
       });
     }
+  }
+  const configurableFormats = await Format.findAll({ where: { moduleId: { [Op.in]: ["bpm", "lyd"] } } });
+  for (const format of configurableFormats) {
+    const config = resolvedFormatConfig(format.moduleId, format.name, format.config || {});
+    if (JSON.stringify(config) !== JSON.stringify(format.config || {})) await format.update({ config });
   }
   app.listen(port, () => console.log(`API lista en http://localhost:${port}`));
 }

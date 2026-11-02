@@ -1,0 +1,2 @@
+ALTER TABLE formats
+ADD COLUMN IF NOT EXISTS config JSONB NOT NULL DEFAULT '{}'::jsonb;

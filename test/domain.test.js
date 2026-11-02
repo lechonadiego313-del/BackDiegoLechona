@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { evaluateRecord, parsePagination, recordDateMatchesMonth, traceRecordsSql, validMonth, validateFormat, validateRecordTimes, validateRecordValues } from "../src/domain.js";
+import { evaluateBulkRecord, evaluateRecord, parsePagination, recordDateMatchesMonth, traceRecordsSql, validMonth, validateBulkValues, validateFormat, validateRecordTimes, validateRecordValues } from "../src/domain.js";
+import { inferredFormatConfig } from "../src/modules.js";
 
 test("validMonth accepts only valid YYYY-MM values", () => {
   assert.equal(validMonth("2026-10"), true);
@@ -80,6 +81,39 @@ test("record value validation preserves numeric validation", () => {
   const format = { fields: [{ n: "Temperatura", t: "num" }] };
   assert.equal(validateRecordValues(format, { Temperatura: "4.5" }), "");
   assert.match(validateRecordValues(format, { Temperatura: "cuatro" }), /número válido/);
+});
+
+test("bulk personnel records validate independent dynamic criteria", () => {
+  const format = { config: { bulkMode: "personnel" }, fields: [
+    { n: "Uñas limpias", t: "cumple" },
+    { n: "Uniforme", t: "cumple" },
+  ] };
+  const values = { __bulk: { mode: "personnel", items: [
+    { masterId: "person-1", masterName: "Ana", results: { "Uñas limpias": "Cumple", Uniforme: "No cumple" } },
+    { masterId: "person-2", masterName: "Luis", results: { "Uñas limpias": "No cumple", Uniforme: "Cumple" } },
+  ] } };
+  assert.equal(validateBulkValues(format, values), "");
+  assert.deepEqual(evaluateBulkRecord(format, values), ["Ana · Uniforme: No cumple", "Luis · Uñas limpias: No cumple"]);
+  assert.match(validateBulkValues(format, { __bulk: { mode: "personnel", items: [
+    { masterId: "person-1", results: { "Uñas limpias": "Cumple" } },
+  ] } }), /Completa/);
+});
+
+test("bulk surface records validate one result per surface", () => {
+  const format = { config: { bulkMode: "surfaces", defaultResult: "Cumple" }, fields: [] };
+  const values = { __bulk: { mode: "surfaces", items: [
+    { masterId: "surface-1", masterName: "Mesón", result: "Cumple" },
+    { masterId: "surface-2", masterName: "Piso", result: "No cumple" },
+  ] } };
+  assert.equal(validateBulkValues(format, values), "");
+  assert.deepEqual(evaluateBulkRecord(format, values), ["Piso: No cumple"]);
+});
+
+test("BPM and POS or OS formats infer bulk modes while concentration stays normal", () => {
+  assert.equal(inferredFormatConfig("bpm", "Revisión diaria").bulkMode, "personnel");
+  assert.deepEqual(inferredFormatConfig("lyd", "P.O.S. apertura"), { bulkMode: "surfaces", defaultResult: "Cumple" });
+  assert.equal(inferredFormatConfig("lyd", "OS cierre").bulkMode, "surfaces");
+  assert.equal(inferredFormatConfig("lyd", "Concentración desinfectante").bulkMode, "none");
 });
 
 test("validateFormat allows a time only on Cumple / No cumple fields", () => {

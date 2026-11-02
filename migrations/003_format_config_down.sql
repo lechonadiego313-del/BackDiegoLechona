@@ -1,0 +1,2 @@
+ALTER TABLE formats
+DROP COLUMN IF EXISTS config;

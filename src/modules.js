@@ -30,6 +30,17 @@ export const MASTER_CATEGORIES = {
   tipos_plagas: "Tipos de plagas",
 };
 
+export function inferredFormatConfig(moduleId, name) {
+  const normalizedName = String(name || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase();
+  if (moduleId === "bpm") return { bulkMode: "personnel", defaultResult: "" };
+  const isConcentration = normalizedName.includes("CONCENTRACION");
+  const isPosOrOs = /(^|[^A-Z])(P\.?\s*O\.?\s*S\.?|O\.?\s*S\.?)([^A-Z]|$)/.test(normalizedName);
+  if (moduleId === "lyd" && isPosOrOs && !isConcentration) {
+    return { bulkMode: "surfaces", defaultResult: "Cumple" };
+  }
+  return { bulkMode: "none", defaultResult: "" };
+}
+
 export const DEFAULT_FORMATS = {
   agua: [
     {
@@ -149,6 +160,7 @@ export const DEFAULT_FORMATS = {
       id: "f_bpm",
       name: "Lista de verificación BPM",
       freq: "Semanal",
+      config: { bulkMode: "personnel", defaultResult: "" },
       fields: [{ n: "Área", t: "area", u: "", min: "", max: "" }, { n: "Cumplimiento", t: "num", u: "%", min: 90, max: 100 }],
     },
   ],

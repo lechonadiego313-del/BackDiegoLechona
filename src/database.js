@@ -58,6 +58,7 @@ export const Format = sequelize.define(
     name: { type: DataTypes.STRING(200), allowNull: false },
     freq: { type: DataTypes.STRING(40), allowNull: false, defaultValue: "Diario" },
     fields: { type: DataTypes.JSONB, allowNull: false, defaultValue: [] },
+    config: { type: DataTypes.JSONB, allowNull: false, defaultValue: {} },
   },
   { tableName: "formats", timestamps: true },
 );
