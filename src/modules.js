@@ -139,7 +139,7 @@ export const DEFAULT_FORMATS = {
       fields: [
         { n: "Área", t: "area", u: "", min: "", max: "" },
         { n: "Tipo de plaga", t: "tipo_plaga", u: "", min: "", max: "" },
-        { n: "Evidencia de plagas", t: "chk", u: "", min: "", max: "" },
+        { n: "Evidencia de plagas", t: "chk", u: "", min: "", max: "", deviationValue: "Sí" },
         { n: "Estaciones revisadas", t: "num", u: "", min: 0, max: "" },
       ],
     },

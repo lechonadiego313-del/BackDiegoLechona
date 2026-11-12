@@ -29,6 +29,16 @@ test("evaluateRecord marks out-of-range numbers and negative checks", () => {
   assert.deepEqual(evaluateRecord(format, { Temperatura: "4", "Empaque íntegro": "Sí" }), []);
 });
 
+test("evidence of pests is a deviation only when evidence exists", () => {
+  const format = {
+    fields: [{ n: "Evidencia de plagas", t: "chk" }],
+  };
+  assert.deepEqual(evaluateRecord(format, { "Evidencia de plagas": "No" }), []);
+  assert.deepEqual(evaluateRecord(format, { "Evidencia de plagas": "Sí" }), [
+    "Evidencia de plagas: No conforme",
+  ]);
+});
+
 test("evaluateRecord supports equipment ranges and Cumple / No cumple fields", () => {
   const format = { fields: [
     { n: "Temperatura", t: "num", u: "°C", min: 0, max: 4 },

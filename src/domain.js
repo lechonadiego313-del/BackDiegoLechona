@@ -28,7 +28,13 @@ export function evaluateRecord(format, values, dynamicRanges = {}) {
         deviations.push(`${field.n}: ${value}${field.u ? ` ${field.u}` : ""} fuera de rango${source} [${range.min ?? "–"} a ${range.max ?? "–"}]`);
       }
     }
-    if (field.t === "chk" && value === "No") deviations.push(`${field.n}: No conforme`);
+    if (field.t === "chk") {
+      const normalizedName = String(field.n || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("es");
+      const deviationValue = field.deviationValue === "Sí" || field.deviationValue === "No"
+        ? field.deviationValue
+        : normalizedName === "evidencia de plagas" ? "Sí" : "No";
+      if (value === deviationValue) deviations.push(`${field.n}: No conforme`);
+    }
     if (field.t === "cumple" && value === "No cumple") deviations.push(`${field.n}: No cumple`);
   }
   return deviations;
